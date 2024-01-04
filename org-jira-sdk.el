@@ -161,7 +161,11 @@
      :proj-key (path '(fields project key))
      :reporter (path '(fields reporter displayName)) ; reporter could be an object of its own slot values
      :resolution (path '(fields resolution name))  ; confirm
-     :sprint (path '(fields sprint name))
+     :sprint (mapconcat (lambda (c)
+                   (let* ((match (string-match "name=\\([^,]*\\)" c)))
+                     (when match
+                       (substring c (match-beginning 1) (match-end 1)))))
+                 (mapcar #'identity (path '(fields customfield_11294))) ", ")
      :start-date (path '(fields start-date))  ; confirm
      :status (org-jira-decode (path '(fields status name)))
      :summary (path '(fields summary))
