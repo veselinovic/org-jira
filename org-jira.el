@@ -1151,7 +1151,7 @@ ORG-JIRA-PROJ-KEY-OVERRIDE being set before and after running."
                     (let ((val (slot-value Issue entry)))
                       (when (and val (not (string= val "")))
                         (org-jira-entry-put (point) (symbol-name entry) val))))
-                  '(filename reporter type type-id priority labels resolution status components created updated sprint))
+                  '(filename reporter type type-id priority labels feature resolution status components created updated sprint))
 
             (org-jira-entry-put (point) "ID" issue-id)
             (org-jira-entry-put (point) "CUSTOM_ID" issue-id)
