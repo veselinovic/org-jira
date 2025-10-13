@@ -331,7 +331,7 @@ This produces a noticeable slowdown and is not recommended by
 request.el, so if at all possible, it should be avoided."
   ;; @TODO :auth: Probably pass this all the way down, but I think
   ;; it may be OK at the moment to just set the variable each time.
-  
+
   (setq jiralib-complete-callback
         ;; Don't run with async if we don't have a login token yet.
         (if jiralib-token callback nil))
@@ -362,6 +362,7 @@ request.el, so if at all possible, it should be avoided."
        (let ((response (jiralib--rest-call-it (format "/rest/api/2/project/%s" (first params)))))
          (cl-coerce (cdr (assoc 'issueTypes response)) 'list)))
       ('getUser (jiralib--rest-call-it "/rest/api/2/user" :params `((accountId . ,(first params)))))
+      ('getUserByUsername (jiralib--rest-call-it "/rest/api/2/user" :params `((username . ,(first params)))))
       ('getVersions (jiralib--rest-call-it (format "/rest/api/2/project/%s/versions" (first params))))
 
       ;; Worklog calls
@@ -435,10 +436,12 @@ request.el, so if at all possible, it should be avoided."
 				   'issues
 				   (cdr params)))
       ('getIssuesFromJqlSearch  (append (cdr ( assoc 'issues (jiralib--rest-call-it
-                                                              "/rest/api/2/search"
-                                                              :type "POST"
-                                                              :data (json-encode `((jql . ,(first params))
-                                                                                   (maxResults . ,(second params)))))))
+                                                              "/rest/api/3/search/jql"
+                                                              :type "GET"
+                                                              :params `((jql . ,(nth 0 params))
+                                                                        (maxResults . ,(nth 1 params))
+                                                                        (fields . "*all")
+                                                                        (expand . "renderedFields")))))
                                         nil))
       ('getPriorities (jiralib--rest-call-it
                        "/rest/api/2/priority"))
@@ -467,8 +470,19 @@ request.el, so if at all possible, it should be avoided."
                                 :type "POST"
                                 :data (json-encode `(,(car (second params)) ,(car (third params))))))
       ('getUsers
-       (jiralib--rest-call-it (format "/rest/api/2/user/assignable/search?project=%s&maxResults=10000" (first params))
-                              :type "GET"))
+       (let* ((project (first params))
+              (start-at 0)
+              (max-results 1000)
+              (all-users '())
+              (more-results t))
+         (while more-results
+           (let* ((endpoint (format "/rest/api/2/user/assignable/search?project=%s&startAt=%d&maxResults=%d"
+                                    project start-at max-results))
+                  (response (jiralib--rest-call-it endpoint :type "GET")))
+             (setq all-users (append all-users response))
+             (setq more-results (>= (length response) max-results))
+             (setq start-at (+ start-at max-results))))
+         all-users))
       ('updateIssue (jiralib--rest-call-it
                      (format "/rest/api/2/issue/%s" (first params))
                      :type "PUT"
@@ -559,7 +573,7 @@ first is normally used."
 
 DATA is a list of association lists (a SOAP array-of type)
 KEY-FIELD is the field to use as the key in the returned alist
-VALUE-FIELD is the field to use as the value in the returned alist"  
+VALUE-FIELD is the field to use as the value in the returned alist"
   (cl-loop for element in data
         collect (cons (cdr (assoc key-field element))
                       (cdr (assoc value-field element)))))
@@ -592,7 +606,6 @@ emacs-lisp"
 
     (apply 'vector (nreverse remote-field-values))))
 
-
 ;;;; Wrappers around JIRA methods
 
 (defun jiralib--rest-api-for-issue-key (key)

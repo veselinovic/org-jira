@@ -1116,7 +1116,7 @@ ORG-JIRA-PROJ-KEY-OVERRIDE being set before and after running."
   "Render single ISSUE."
 ;;  (org-jira-log "Rendering issue from issue list")
 ;;  (org-jira-log (org-jira-sdk-dump Issue))
-  (with-slots (filename proj-key issue-id summary status priority headline id) Issue
+  (with-slots (filename proj-key issue-id summary status priority headline id parent-key) Issue
     (let (p)
       (with-current-buffer (org-jira--get-project-buffer Issue)
         (org-jira-freeze-ui
@@ -1152,6 +1152,9 @@ ORG-JIRA-PROJ-KEY-OVERRIDE being set before and after running."
                       (when (and val (not (string= val "")))
                         (org-jira-entry-put (point) (symbol-name entry) val))))
                   '(filename reporter type type-id priority labels feature resolution status components created updated sprint))
+
+            (when parent-key
+              (org-jira-entry-put (point) "parent-issue-key" (format "[jira:%s]" parent-key)))
 
             (org-jira-entry-put (point) "ID" issue-id)
             (org-jira-entry-put (point) "CUSTOM_ID" issue-id)
@@ -1810,31 +1813,32 @@ that should be bound to an issue."
 
 (defun org-jira-get-issue-struct (project type summary description &optional parent-id)
   "Create an issue struct for PROJECT, of TYPE, with SUMMARY and DESCRIPTION."
-  (if (or (equal project "")
-          (equal type "")
-          (equal summary ""))
+  (if (or (equal project "") (equal type "") (equal summary ""))
       (error "Must provide all information!"))
   (let* ((project-components (jiralib-get-components project))
          (jira-users (org-jira-get-assignable-users project))
-         (user (completing-read "Assignee: " (mapcar 'car jira-users)))
+         (user (completing-read "Assignee: " (mapcar #'car jira-users)))
          (priority (car (rassoc (org-jira-read-priority) (jiralib-get-priorities))))
          (labels (org-jira-read-labels))
-         (ticket-struct
-          `((fields
-             (project (key . ,project))
-             (parent (key . ,parent-id))
-             (issuetype (id . ,(car (rassoc type (if (and (boundp 'parent-id) parent-id)
-                                                     (jiralib-get-subtask-types)
-                                                   (jiralib-get-issue-types-by-project project))))))
-             (summary . ,(format "%s%s" summary
-                                 (if (and (boundp 'parent-id) parent-id)
-                                     (format " (subtask of [jira:%s])" parent-id)
-                                   "")))
-             (description . ,description)
-             (priority (id . ,priority))
-             (labels . ,labels)
-             ;; accountId should be nil if Unassigned, not the key slot.
-             (assignee (accountId . ,(or (cdr (assoc user jira-users)) nil)))))))
+         (ticket-fields
+          `((project (key . ,project))
+            (parent (key . ,parent-id))
+            (issuetype (id . ,(car (rassoc type
+                                           (if (and (boundp 'parent-id) parent-id)
+                                               (jiralib-get-subtask-types)
+                                             (jiralib-get-issue-types-by-project project))))))
+            (summary . ,(format "%s%s" summary
+                                (if (and (boundp 'parent-id) parent-id)
+                                    (format " (subtask of [jira:%s])" parent-id)
+                                  "")))
+            (description . ,description)
+            (priority (id . ,priority))
+            (labels . ,labels)
+            (assignee (accountId . ,(cdr (assoc user jira-users))))))
+         (filtered-fields (jiralib-filter-fields-by-exclude-list
+                           jiralib-update-issue-fields-exclude-list
+                           ticket-fields))
+         (ticket-struct `((fields . ,filtered-fields))))
     ticket-struct))
 
 ;;;###autoload
@@ -2219,6 +2223,7 @@ otherwise it should return:
            (org-issue-type (org-jira-get-issue-val-from-org 'type))
            (org-issue-type-id (org-jira-get-issue-val-from-org 'type-id))
            (org-issue-assignee (cl-getf rest :assignee (org-jira-get-issue-val-from-org 'assignee)))
+           (org-issue-assignee-username (cl-getf rest :assignee-username (org-jira-get-issue-val-from-org 'assignee-username)))
            (org-issue-reporter (cl-getf rest :reporter (org-jira-get-issue-val-from-org 'reporter)))
            (project (replace-regexp-in-string "-[0-9]+" "" issue-id))
            (project-components (jiralib-get-components project)))
@@ -2243,7 +2248,10 @@ otherwise it should return:
                    (cons 'priority (org-jira-get-id-name-alist org-issue-priority
                                                        (jiralib-get-priorities)))
                    (cons 'description org-issue-description)
-                   (cons 'assignee (list (cons 'id (jiralib-get-user-account-id project org-issue-assignee))))
+                   ;; If org-issue-assignee-username is set, grab the username instead of the assignee value
+                   (if (stringp org-issue-assignee-username)
+                          (cons 'assignee (list (cons 'name org-issue-assignee-username)))
+                          (cons 'assignee (list (cons 'id (jiralib-get-user-account-id project org-issue-assignee)))))
                    (cons 'summary (org-jira-strip-priority-tags (org-jira-get-issue-val-from-org 'summary)))
                    (cons 'issuetype `((id . ,org-issue-type-id)
       (name . ,org-issue-type))))))

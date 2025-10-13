@@ -103,6 +103,7 @@
    (issue-id :type string :initarg :issue-id :documentation "The common ID/key, such as EX-1.")
    (issue-id-int :type string :initarg :issue-id-int :documentation "The internal Jira ID, such as 12345.")
    (filename :type (or null string) :initarg :filename :documentation "The filename to write issue to.")
+   (parent-key :type (or null string) :initarg :parent-key :documentation "The parent issue key if there is one")
    (priority :type (or null string) :initarg :priority)
    (proj-key :type string :initarg :proj-key)
    (reporter :type (or null string) :initarg :reporter)
@@ -152,13 +153,14 @@
      :labels (mapconcat (lambda (c) (format "%s" c)) (mapcar #'identity (path '(fields labels))) ", ")
      :feature (or (path '(fields customfield_11296)) "")     ; confirm
      :created (path '(fields created))     ; confirm
-     :description (or (path '(fields description)) "")
+     :description (or (path '(renderedFields description)) "")
      :duedate (or (path '(fields sprint endDate)) (path '(fields duedate)))         ; confirm
      :filename (path '(fields project key))
      :headline (path '(fields summary)) ; Duplicate of summary, maybe different.
      :id (path '(key))
      :issue-id (path '(key))
      :issue-id-int (path '(id))
+     :parent-key (path '(fields parent key))
      :priority (path '(fields priority name))
      :proj-key (path '(fields project key))
      :reporter (path '(fields reporter displayName)) ; reporter could be an object of its own slot values
