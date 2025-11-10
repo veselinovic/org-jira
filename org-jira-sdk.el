@@ -153,7 +153,7 @@
      :labels (mapconcat (lambda (c) (format "%s" c)) (mapcar #'identity (path '(fields labels))) ", ")
      :feature (or (path '(fields customfield_11296)) "")     ; confirm
      :created (path '(fields created))     ; confirm
-     :description (or (path '(renderedFields description)) "")
+     :description (or (path '(renderedFields description)) (or (path '(fields description)) ""))
      :duedate (or (path '(fields sprint endDate)) (path '(fields duedate)))         ; confirm
      :filename (path '(fields project key))
      :headline (path '(fields summary)) ; Duplicate of summary, maybe different.
