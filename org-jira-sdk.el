@@ -94,6 +94,7 @@
   ((assignee :type (or null string) :initarg :assignee)
    (components :type string :initarg :components)
    (labels :type string :initarg :labels)
+   (feature-link :type (or null string) :initarg :feature-link)
    (created :type string :initarg :created)
    (description :type (or null string) :initarg :description)
    (duedate :type (or null string) :initarg :duedate)
@@ -149,6 +150,7 @@
      :assignee (path '(fields assignee displayName))
      :components (mapconcat (lambda (c) (org-jira-sdk-path c '(name))) (path '(fields components)) ", ")
      :labels (mapconcat (lambda (c) (format "%s" c)) (mapcar #'identity (path '(fields labels))) ", ")
+     :feature-link (path '(fields customfield_11296))
      :created (path '(fields created))     ; confirm
      :description (or (path '(fields description)) "")
      :duedate (or (path '(fields sprint endDate)) (path '(fields duedate)))         ; confirm
@@ -162,10 +164,10 @@
      :reporter (path '(fields reporter displayName)) ; reporter could be an object of its own slot values
      :resolution (path '(fields resolution name))  ; confirm
      :sprint (mapconcat (lambda (c)
-                   (let* ((match (string-match "name=\\([^,]*\\)" c)))
-                     (when match
-                       (substring c (match-beginning 1) (match-end 1)))))
-                 (mapcar #'identity (path '(fields customfield_11294))) ", ")
+                          (let* ((match (string-match "name=\\([^,]*\\)" c)))
+                            (when match
+                              (substring c (match-beginning 1) (match-end 1)))))
+                        (mapcar #'identity (path '(fields customfield_11294))) ", ")
      :start-date (path '(fields start-date))  ; confirm
      :status (org-jira-decode (path '(fields status name)))
      :summary (path '(fields summary))
