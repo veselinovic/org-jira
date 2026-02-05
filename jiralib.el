@@ -81,7 +81,9 @@
 
 ;;; Code:
 
-(eval-when-compile (require 'cl-lib))
+(eval-when-compile
+  (require 'cl)
+  (require 'cl-lib))
 (require 'cl-seq)
 
 ;; Forward declarations for functions defined in org-jira.el
