@@ -110,6 +110,7 @@
    (sprint :type (or null string) :initarg :sprint)
    (start-date :type (or null string) :initarg :start-date)
    (status :type string :initarg :status)
+   (story-points :type (or null float) :initarg :story-points)
    (summary :type string :initarg :summary)
    (type :type string :initarg :type)
    (type-id :type string :initarg :type-id)
@@ -170,6 +171,7 @@
                         (mapcar #'identity (path '(fields customfield_11294))) ", ")
      :start-date (path '(fields start-date))  ; confirm
      :status (org-jira-decode (path '(fields status name)))
+     :story-points (path '(fields customfield_11292))
      :summary (path '(fields summary))
      :type (path '(fields issuetype name))
      :type-id (path '(fields issuetype id))
