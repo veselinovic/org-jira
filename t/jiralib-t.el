@@ -42,11 +42,48 @@
 ;;; Code:
 
 (require 'jiralib)
+(require 'org-jira)
 
 (ert-deftest jiralib-format-datetime-test ()
   (should
    (string= "2017-01-01T00:00:00.000+0000"
             (jiralib-format-datetime "2017-01-01 00:00:00"))))
+
+(ert-deftest jiralib-do-jql-search-uses-compatible-search-post-endpoint ()
+  (let (captured-api captured-args)
+    (cl-letf (((symbol-function 'jiralib--rest-call-it)
+               (lambda (api &rest args)
+                 (setq captured-api api
+                       captured-args args)
+                 '((issues . [((key . "CDC-1234"))])))))
+      (let ((jiralib-token t)
+            (jiralib-issue-regexp ".")
+            (jiralib-target-api-version 3))
+        (should (equal '(((key . "CDC-1234")))
+                       (jiralib-call "getIssuesFromJqlSearch" nil "key = \"CDC-1234\"" 50)))))
+    (should (equal "/rest/api/2/search" captured-api))
+    (should (equal "POST" (plist-get captured-args :type)))
+    (should
+     (equal "{\"jql\":\"key = \\\"CDC-1234\\\"\",\"maxResults\":50,\"fields\":[\"*all\"],\"expand\":[\"renderedFields\"]}"
+            (plist-get captured-args :data)))))
+
+(ert-deftest org-jira-get-issue-by-id-uses-key-jql-for-issue-keys ()
+  (let (captured-jql)
+    (cl-letf (((symbol-function 'jiralib-do-jql-search)
+               (lambda (jql &optional _limit _callback)
+                 (setq captured-jql jql)
+                 nil)))
+      (org-jira-get-issue-by-id "CDC-1234"))
+    (should (equal "key = \"CDC-1234\"" captured-jql))))
+
+(ert-deftest org-jira-get-issue-by-id-uses-id-jql-for-numeric-ids ()
+  (let (captured-jql)
+    (cl-letf (((symbol-function 'jiralib-do-jql-search)
+               (lambda (jql &optional _limit _callback)
+                 (setq captured-jql jql)
+                 nil)))
+      (org-jira-get-issue-by-id 1234))
+    (should (equal "id = 1234" captured-jql))))
 
 (provide 'jiralib-t)
 ;;; jiralib-t.el ends here

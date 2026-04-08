@@ -922,7 +922,10 @@ jql."
 (defun org-jira-get-issue-by-id (id)
   "Get an issue by its ID."
   (push id org-jira-issue-id-history)
-  (let ((jql (format "id = %s" id)))
+  (let ((jql (if (and (stringp id)
+                      (string-match-p "^[[:alnum:]_]+-[0-9]+$" id))
+                 (format "key = \"%s\"" id)
+               (format "id = %s" id))))
     (jiralib-do-jql-search jql)))
 
 (defun org-jira-get-issue-by-fixversion (fixversion-id)
