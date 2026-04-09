@@ -94,6 +94,14 @@
 Traverse down the keys of KEY-CHAIN."
   (cl-reduce (lambda (a k) (alist-get k a)) key-chain :initial-value alist))
 
+(defun org-jira-sdk-issue-description (data)
+  "Return the issue description from DATA, preferring raw text over rendered HTML."
+  (let ((raw-description (org-jira-sdk-path data '(fields description)))
+        (rendered-description (org-jira-sdk-path data '(renderedFields description))))
+    (if (stringp raw-description)
+        raw-description
+      (or rendered-description ""))))
+
 (defclass org-jira-sdk-issue (org-jira-sdk-record)
   ((assignee :type (or null string) :initarg :assignee)
    (components :type string :initarg :components)
@@ -157,7 +165,7 @@ Traverse down the keys of KEY-CHAIN."
      :labels (mapconcat (lambda (c) (format "%s" c)) (mapcar #'identity (path '(fields labels))) ", ")
      :feature (or (path '(fields customfield_11296)) "")     ; confirm
      :created (path '(fields created))     ; confirm
-     :description (or (path '(renderedFields description)) (or (path '(fields description)) ""))
+     :description (org-jira-sdk-issue-description (oref rec data))
      :duedate (or (path '(fields sprint endDate)) (path '(fields duedate)))         ; confirm
      :filename (path '(fields project key))
      :headline (path '(fields summary)) ; Duplicate of summary, maybe different.
