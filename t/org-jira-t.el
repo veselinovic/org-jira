@@ -229,6 +229,7 @@ CLOCK:")))
          (org-jira-download-comments nil)
          (org-jira-worklog-sync-p nil)
          (org-jira-deadline-duedate-sync-p nil)
+         (org-tags-column -80)
          (issue (make-instance 'org-jira-sdk-issue
                                :assignee "Unassigned"
                                :components ""
@@ -262,6 +263,9 @@ CLOCK:")))
             (should (string-match-p
                      (regexp-quote
                       "** TODO [[https://example.atlassian.net/browse/AHU-39][Rendered story title]]")
+                     (buffer-string)))
+            (should (string-match-p
+                     "\\[Rendered story title\\]\\]  +:AHU_39:"
                      (buffer-string)))
             (should (string-match-p
                      (regexp-quote "*** description:\n  Rendered description")

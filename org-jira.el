@@ -1166,6 +1166,9 @@ ORG-JIRA-PROJ-KEY-OVERRIDE being set before and after running."
             (org-narrow-to-subtree)
             (save-excursion
               (org-back-to-heading t)
+              (if (fboundp 'font-lock-ensure)
+                  (font-lock-ensure (line-beginning-position) (line-end-position))
+                (font-lock-fontify-region (line-beginning-position) (line-end-position)))
               (org-set-tags-to (replace-regexp-in-string "-" "_" issue-id)))
             (org-jira-entry-put (point) "assignee" (or (slot-value Issue 'assignee) "Unassigned"))
             (mapc (lambda (entry)
