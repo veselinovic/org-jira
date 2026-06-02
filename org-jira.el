@@ -629,6 +629,27 @@ it isn't already on."
       (expand-file-name translation (org-jira--ensure-working-dir))
     (expand-file-name (concat project-key ".org") (org-jira--ensure-working-dir))))
 
+(defun org-jira--issue-browse-url (issue-id)
+  "Return the browser URL for ISSUE-ID."
+  (format "%s/browse/%s"
+          (replace-regexp-in-string "/*$" "" jiralib-url)
+          issue-id))
+
+(defun org-jira--issue-link (issue-id description)
+  "Return an Org link to ISSUE-ID with DESCRIPTION."
+  (format "[[%s][%s]]" (org-jira--issue-browse-url issue-id) description))
+
+(defun org-jira--strip-heading-issue-link (heading issue-id)
+  "Remove ISSUE-ID's leading Org link from HEADING."
+  (let ((link-regexp (format "\\`\\[\\[%s\\]\\[\\(.*\\)\\]\\]\\'"
+                             (regexp-quote (org-jira--issue-browse-url issue-id)))))
+    (if (string-match link-regexp heading)
+        (match-string 1 heading)
+      (let ((key-link-regexp (format "\\`\\(?:%s\\|%s\\)[[:blank:]]*"
+                                     (regexp-quote (org-jira--issue-link issue-id issue-id))
+                                     (regexp-quote issue-id))))
+        (replace-regexp-in-string key-link-regexp "" heading)))))
+
 (defun org-jira-get-project-lead (proj)
   (org-jira-find-value proj 'lead 'name))
 
@@ -1138,7 +1159,7 @@ ORG-JIRA-PROJ-KEY-OVERRIDE being set before and after running."
              (concat (org-jira-get-org-keyword-from-status status)
                      " "
                      (org-jira-get-org-priority-cookie-from-issue priority)
-                     headline))
+                     (org-jira--issue-link issue-id headline)))
             (save-excursion
               (unless (search-forward "\n" (point-max) 1)
                 (insert "\n")))
@@ -1176,8 +1197,7 @@ ORG-JIRA-PROJ-KEY-OVERRIDE being set before and after running."
                (ensure-on-issue-id-with-filename issue-id filename
                                                  (let* ((entry-heading
                                                          (concat (symbol-name heading-entry)
-                                                                 (format ": [[%s][%s]]"
-                                                                         (concat jiralib-url "/browse/" issue-id) issue-id))))
+                                                                 ":")))
                                                    (setq p (org-find-exact-headline-in-buffer entry-heading))
                                                    (if (and p (>= p (point-min))
                                                             (<= p (point-max)))
@@ -1904,7 +1924,9 @@ that should be bound to an issue."
 
             ((eq my-key 'summary)
              (ensure-on-issue
-               (org-get-heading t t)))
+               (org-jira--strip-heading-issue-link
+                (org-get-heading t t)
+                (org-jira-id))))
 
             ;; org returns a time tuple, we need to convert it
             ((eq my-key 'deadline)

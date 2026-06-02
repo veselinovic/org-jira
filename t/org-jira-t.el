@@ -223,6 +223,61 @@ CLOCK:")))
   (should (string= "food and clean" (org-jira-strip-priority-tags "  [#C] [#D] food and clean ")))
   )
 
+(ert-deftest org-jira-render-issue-links-key-in-heading-test ()
+  (let* ((org-jira-working-dir (make-temp-file "org-jira-test" t))
+         (jiralib-url "https://example.atlassian.net")
+         (org-jira-download-comments nil)
+         (org-jira-worklog-sync-p nil)
+         (org-jira-deadline-duedate-sync-p nil)
+         (issue (make-instance 'org-jira-sdk-issue
+                               :assignee "Unassigned"
+                               :components ""
+                               :labels ""
+                               :feature-link nil
+                               :created "2026-06-01"
+                               :description "Rendered description"
+                               :duedate ""
+                               :filename "AHU"
+                               :headline "Rendered story title"
+                               :id "AHU-39"
+                               :issue-id "AHU-39"
+                               :issue-id-int "10402"
+                               :priority nil
+                               :proj-key "AHU"
+                               :reporter nil
+                               :resolution nil
+                               :sprint nil
+                               :start-date nil
+                               :status "To Do"
+                               :story-points nil
+                               :summary "Rendered story title"
+                               :type "Story"
+                               :type-id "10001"
+                               :updated "2026-06-01")))
+    (unwind-protect
+        (progn
+          (org-jira--render-issue issue)
+          (with-current-buffer (find-buffer-visiting
+                                (expand-file-name "AHU.org" org-jira-working-dir))
+            (should (string-match-p
+                     (regexp-quote
+                      "** TODO [[https://example.atlassian.net/browse/AHU-39][Rendered story title]]")
+                     (buffer-string)))
+            (should (string-match-p
+                     (regexp-quote "*** description:\n  Rendered description")
+                     (buffer-string)))
+            (should-not (string-match-p
+                         (regexp-quote "description: [[https://example.atlassian.net/browse/AHU-39][AHU-39]]")
+                         (buffer-string)))
+            (goto-char (point-min))
+            (search-forward "Rendered story title")
+            (should (string= "Rendered story title"
+                             (org-jira-get-issue-val-from-org 'summary)))))
+      (when-let ((buffer (find-buffer-visiting
+                          (expand-file-name "AHU.org" org-jira-working-dir))))
+        (kill-buffer buffer))
+      (delete-directory org-jira-working-dir t))))
+
 
 (provide 'org-jira-t)
 ;;; org-jira-t.el ends here
