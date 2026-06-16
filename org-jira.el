@@ -1006,6 +1006,41 @@ With a prefix argument, allow you to customize the jql.  See
     (when issue-pos
       (goto-char issue-pos)
       (recenter 0))))
+
+(defun org-jira--issue-id-at-point ()
+  "Return the Jira issue key at point, if there is one."
+  (let ((issue-key-regexp "\\<[[:alnum:]_]+-[0-9]+\\>")
+        (point-position (point))
+        issue-id)
+    (or (let ((id (when (derived-mode-p 'org-mode)
+                    (org-entry-get (point) "ID" t))))
+          (when (and id (string-match-p issue-key-regexp id))
+            id))
+        (save-excursion
+          (goto-char (line-beginning-position))
+          (while (and (not issue-id)
+                      (re-search-forward issue-key-regexp (line-end-position) t))
+            (when (and (<= (match-beginning 0) point-position)
+                       (<= point-position (match-end 0)))
+              (setq issue-id (match-string-no-properties 0))))
+          issue-id))))
+
+;;;###autoload
+(defun org-jira-get-issue-here (id)
+  "Get Jira issue ID and insert it as a top-level Org heading at point."
+  (interactive
+   (list (read-string "Issue ID: "
+                      (or (org-jira--issue-id-at-point) "")
+                      'org-jira-issue-id-history)))
+  (when (string= id "")
+    (error "Issue ID is required"))
+  (unless (derived-mode-p 'org-mode)
+    (user-error "org-jira-get-issue-here must be run in an Org buffer"))
+  (push id org-jira-issue-id-history)
+  (-> id
+      jiralib-get-issue
+      org-jira-sdk-create-issue-from-data
+      org-jira--render-issue-here))
 ;;;###autoload
 (defun org-jira-get-issues-by-fixversion (fixversion)
   "Get list of issues by FIXVERSION."
@@ -1133,107 +1168,131 @@ ORG-JIRA-PROJ-KEY-OVERRIDE being set before and after running."
     (unless (looking-at top-heading)
       (insert (format "\n* %s-Tickets\n" proj-key)))))
 
+(defun org-jira--insert-issue-heading (heading-level)
+  "Insert an Org heading prefix at HEADING-LEVEL and return its start."
+  (unless (bolp)
+    (insert "\n"))
+  (prog1 (point)
+    (insert (make-string heading-level ?*) " ")))
+
+(defun org-jira--render-issue-in-current-buffer (Issue heading-level &optional update-existing)
+  "Render ISSUE in the current buffer as a HEADING-LEVEL heading.
+
+When UPDATE-EXISTING is non-nil, replace an existing issue heading
+matching ISSUE's ID instead of inserting at point."
+  (with-slots (filename proj-key issue-id summary status priority headline id) Issue
+    (let (p inserted-heading heading-start)
+      (save-restriction
+        (when update-existing
+          (setq p (org-find-entry-with-id issue-id)))
+        (if (and p (>= p (point-min))
+                 (<= p (point-max)))
+            (progn
+              (goto-char p)
+              (setq heading-start (line-beginning-position))
+              (forward-thing 'whitespace)
+              (org-jira-kill-line))
+          (setq heading-start (org-jira--insert-issue-heading heading-level))
+          (setq inserted-heading t))
+        (org-jira-insert
+         (concat (org-jira-get-org-keyword-from-status status)
+                 " "
+                 (org-jira-get-org-priority-cookie-from-issue priority)
+                 (org-jira--issue-link issue-id headline)))
+        (if inserted-heading
+            (insert "\n")
+          (save-excursion
+            (unless (search-forward "\n" (point-max) 1)
+              (insert "\n"))))
+        (goto-char heading-start)
+        (org-narrow-to-subtree)
+        (save-excursion
+          (org-back-to-heading t)
+          (if (fboundp 'font-lock-ensure)
+              (font-lock-ensure (line-beginning-position) (line-end-position))
+            (font-lock-fontify-region (line-beginning-position) (line-end-position)))
+          (org-set-tags-to (replace-regexp-in-string "-" "_" issue-id)))
+        (org-jira-entry-put (point) "assignee" (or (slot-value Issue 'assignee) "Unassigned"))
+        (mapc (lambda (entry)
+                (let* ((raw (slot-value Issue entry))
+                       ;; story-points is a float; everything else we assume is already a string
+                       (val (if (eq entry 'story-points)
+                                (and raw (format "%s" raw))
+                              raw)))
+                  (when (and val (not (string= val "")))
+                    (org-jira-entry-put (point) (symbol-name entry) val))))
+              '(filename reporter type type-id priority labels feature-link resolution status components created updated sprint story-points))
+        ;; (mapc (lambda (entry)
+        ;;         (let ((val (slot-value Issue entry)))
+        ;;           (when (and val (not (string= val "")))
+        ;;             (org-jira-entry-put (point) (symbol-name entry) val))))
+        ;;       '(filename reporter type type-id priority labels feature-link resolution status components created updated sprint story-points))
+
+        (org-jira-entry-put (point) "ID" issue-id)
+        (org-jira-entry-put (point) "CUSTOM_ID" issue-id)
+
+        ;; Insert the duedate as a deadline if it exists
+        (when org-jira-deadline-duedate-sync-p
+          (let ((duedate (oref Issue duedate)))
+            (when (> (length duedate) 0)
+              (org-deadline nil duedate))))
+
+        (mapc
+         (lambda (heading-entry)
+           (let* ((entry-heading
+                   (concat (symbol-name heading-entry)
+                           ":")))
+             (setq p (org-find-exact-headline-in-buffer entry-heading))
+             (if (and p (>= p (point-min))
+                      (<= p (point-max)))
+                 (progn
+                   (goto-char p)
+                   (org-narrow-to-subtree)
+                   (goto-char (point-min))
+                   (forward-line 1)
+                   (delete-region (point) (point-max)))
+               (if (org-goto-first-child)
+                   (org-insert-heading)
+                 (goto-char (point-max))
+                 (open-line 1)
+                 (org-insert-subheading t))
+               (org-jira-insert entry-heading "\n"))
+
+             ;;  Insert 2 spaces of indentation so Jira markup won't cause org-markup
+             (org-jira-insert
+              (replace-regexp-in-string
+               "^" "  "
+               (format "%s" (slot-value Issue heading-entry))))))
+         '(description))))))
+
+(defun org-jira--render-issue-here (Issue)
+  "Render single ISSUE as a top-level heading at point."
+  (org-jira-freeze-ui
+    (org-jira-maybe-activate-mode)
+    (org-jira--render-issue-in-current-buffer Issue 1)))
+
 (defun org-jira--render-issue (Issue)
   "Render single ISSUE."
 ;;  (org-jira-log "Rendering issue from issue list")
 ;;  (org-jira-log (org-jira-sdk-dump Issue))
   (with-slots (filename proj-key issue-id summary status priority headline id) Issue
-    (let (p)
-      (with-current-buffer (org-jira--get-project-buffer Issue)
-        (org-jira-freeze-ui
-          (org-jira-maybe-activate-mode)
-          (org-jira--maybe-render-top-heading proj-key)
-          (setq p (org-find-entry-with-id issue-id))
-          (save-restriction
-            (if (and p (>= p (point-min))
-                     (<= p (point-max)))
-                (progn
-                  (goto-char p)
-                  (forward-thing 'whitespace)
-                  (org-jira-kill-line))
-              (goto-char (point-max))
-              (unless (looking-at "^")
-                (insert "\n"))
-              (insert "** "))
-            (org-jira-insert
-             (concat (org-jira-get-org-keyword-from-status status)
-                     " "
-                     (org-jira-get-org-priority-cookie-from-issue priority)
-                     (org-jira--issue-link issue-id headline)))
-            (save-excursion
-              (unless (search-forward "\n" (point-max) 1)
-                (insert "\n")))
-            (org-narrow-to-subtree)
-            (save-excursion
-              (org-back-to-heading t)
-              (if (fboundp 'font-lock-ensure)
-                  (font-lock-ensure (line-beginning-position) (line-end-position))
-                (font-lock-fontify-region (line-beginning-position) (line-end-position)))
-              (org-set-tags-to (replace-regexp-in-string "-" "_" issue-id)))
-            (org-jira-entry-put (point) "assignee" (or (slot-value Issue 'assignee) "Unassigned"))
-            (mapc (lambda (entry)
-                    (let* ((raw (slot-value Issue entry))
-                           ;; story-points is a float; everything else we assume is already a string
-                           (val (if (eq entry 'story-points)
-                                    (and raw (format "%s" raw))
-                                  raw)))
-                      (when (and val (not (string= val "")))
-                        (org-jira-entry-put (point) (symbol-name entry) val))))
-                  '(filename reporter type type-id priority labels feature-link resolution status components created updated sprint story-points))
-            ;; (mapc (lambda (entry)
-            ;;         (let ((val (slot-value Issue entry)))
-            ;;           (when (and val (not (string= val "")))
-            ;;             (org-jira-entry-put (point) (symbol-name entry) val))))
-            ;;       '(filename reporter type type-id priority labels feature-link resolution status components created updated sprint story-points))
+    (with-current-buffer (org-jira--get-project-buffer Issue)
+      (org-jira-freeze-ui
+        (org-jira-maybe-activate-mode)
+        (org-jira--maybe-render-top-heading proj-key)
+        (goto-char (point-max))
+        (org-jira--render-issue-in-current-buffer Issue 2 t)
 
-            (org-jira-entry-put (point) "ID" issue-id)
-            (org-jira-entry-put (point) "CUSTOM_ID" issue-id)
+        (when org-jira-download-comments
+          (org-jira-update-comments-for-issue Issue)
 
-            ;; Insert the duedate as a deadline if it exists
-            (when org-jira-deadline-duedate-sync-p
-              (let ((duedate (oref Issue duedate)))
-                (when (> (length duedate) 0)
-                  (org-deadline nil duedate))))
+          ;; FIXME: Re-enable when attachments are not erroring.
+          ;;(org-jira-update-attachments-for-current-issue)
+          )
 
-            (mapc
-             (lambda (heading-entry)
-               (ensure-on-issue-id-with-filename issue-id filename
-                                                 (let* ((entry-heading
-                                                         (concat (symbol-name heading-entry)
-                                                                 ":")))
-                                                   (setq p (org-find-exact-headline-in-buffer entry-heading))
-                                                   (if (and p (>= p (point-min))
-                                                            (<= p (point-max)))
-                                                       (progn
-                                                         (goto-char p)
-                                                         (org-narrow-to-subtree)
-                                                         (goto-char (point-min))
-                                                         (forward-line 1)
-                                                         (delete-region (point) (point-max)))
-                                                     (if (org-goto-first-child)
-                                                         (org-insert-heading)
-                                                       (goto-char (point-max))
-                                                       (open-line 1)
-                                                       (org-insert-subheading t))
-                                                     (org-jira-insert entry-heading "\n"))
-
-                                                   ;;  Insert 2 spaces of indentation so Jira markup won't cause org-markup
-                                                   (org-jira-insert
-                                                    (replace-regexp-in-string
-                                                     "^" "  "
-                                                     (format "%s" (slot-value Issue heading-entry)))))))
-             '(description))
-
-            (when org-jira-download-comments
-              (org-jira-update-comments-for-issue Issue)
-
-              ;; FIXME: Re-enable when attachments are not erroring.
-              ;;(org-jira-update-attachments-for-current-issue)
-              )
-
-            ;; only sync worklog clocks when the user sets it to be so.
-            (when org-jira-worklog-sync-p
-              (org-jira-update-worklogs-for-issue issue-id filename))))))))
+        ;; only sync worklog clocks when the user sets it to be so.
+        (when org-jira-worklog-sync-p
+          (org-jira-update-worklogs-for-issue issue-id filename))))))
 
 (defun org-jira--render-issues-from-issue-list (Issues)
   "Add the issues from ISSUES list into the org file(s).

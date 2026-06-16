@@ -223,6 +223,65 @@ CLOCK:")))
   (should (string= "food and clean" (org-jira-strip-priority-tags "  [#C] [#D] food and clean ")))
   )
 
+(defun org-jira-t--issue-data ()
+  '((key . "AHU-39")
+    (id . "10402")
+    (fields . ((assignee . ((displayName . "Unassigned")))
+               (components . [])
+               (labels . [])
+               (created . "2026-06-01")
+               (description . "Rendered description")
+               (duedate . "")
+               (project . ((key . "AHU")))
+               (status . ((name . "To Do")))
+               (summary . "Rendered story title")
+               (issuetype . ((name . "Story")
+                             (id . "10001")))
+               (updated . "2026-06-01")))))
+
+(ert-deftest org-jira-issue-id-at-point-test ()
+  (with-temp-buffer
+    (org-mode)
+    (insert "See AHU-39 for details")
+    (goto-char (point-min))
+    (search-forward "HU")
+    (should (string= "AHU-39" (org-jira--issue-id-at-point)))))
+
+(ert-deftest org-jira-get-issue-here-renders-level-one-at-point-test ()
+  (let ((jiralib-url "https://example.atlassian.net")
+        (org-jira-download-comments nil)
+        (org-jira-worklog-sync-p nil)
+        (org-jira-deadline-duedate-sync-p nil)
+        (org-tags-column -80)
+        requested-id)
+    (with-temp-buffer
+      (org-mode)
+      (insert "* Existing\n\n* Next\n")
+      (goto-char (point-min))
+      (search-forward "\n\n")
+      (cl-letf (((symbol-function 'jiralib-get-issue)
+                 (lambda (id &optional _callback)
+                   (setq requested-id id)
+                   (org-jira-t--issue-data))))
+        (org-jira-get-issue-here "AHU-39"))
+      (should (string= "AHU-39" requested-id))
+      (should (string-match-p
+               (regexp-quote
+                "* TODO [[https://example.atlassian.net/browse/AHU-39][Rendered story title]]")
+               (buffer-string)))
+      (should (string-match-p
+               "\\[Rendered story title\\]\\]  +:AHU_39:"
+               (buffer-string)))
+      (should (string-match-p
+               (regexp-quote "** description:\n  Rendered description")
+               (buffer-string)))
+      (should (string-match-p
+               (regexp-quote "* Existing\n\n* TODO")
+               (buffer-string)))
+      (should-not (string-match-p
+                   (regexp-quote "** TODO [[https://example.atlassian.net/browse/AHU-39][Rendered story title]]")
+                   (buffer-string))))))
+
 (ert-deftest org-jira-render-issue-links-key-in-heading-test ()
   (let* ((org-jira-working-dir (make-temp-file "org-jira-test" t))
          (jiralib-url "https://example.atlassian.net")
