@@ -1,4 +1,4 @@
-;;; org-jira-sdk.el -- SDK Layer for entities
+;;; org-jira-sdk.el -- SDK Layer for entities  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2018 Matthew Carter <m@ahungry.com>
 ;;
