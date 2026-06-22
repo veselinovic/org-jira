@@ -432,6 +432,26 @@ See `org-default-priority' for more info."
   "Get the proper proj-key from an ISSUE instance."
   (oref Issue filename))
 
+(defun org-jira--buffer-has-issue-p (buffer issue-id)
+  "Return non-nil when BUFFER contains an Org entry for ISSUE-ID."
+  (and (buffer-live-p buffer)
+       (with-current-buffer buffer
+         (and (derived-mode-p 'org-mode)
+              (save-excursion
+                (save-restriction
+                  (widen)
+                  (org-find-entry-with-id issue-id)))))))
+
+(defun org-jira--get-buffer-for-issue (issue-id filename)
+  "Return the buffer containing ISSUE-ID, falling back to FILENAME."
+  (let ((current-buffer (current-buffer)))
+    (if (org-jira--buffer-has-issue-p current-buffer issue-id)
+        current-buffer
+      (let* ((proj-key filename)
+             (project-file (org-jira--get-project-file-name proj-key)))
+        (or (find-buffer-visiting project-file)
+            (find-file project-file))))))
+
 ;; TODO: Merge these 3 ensure macros (or, scrap all but ones that work on Issue)
 (defmacro ensure-on-issue-id (issue-id &rest body)
   "Just do some work on ISSUE-ID, execute BODY."
@@ -459,10 +479,8 @@ See `org-default-priority' for more info."
         (filename-var (make-symbol "filename")))
     `(let* ((,issue-id-var ,issue-id)
             (,filename-var ,filename)
-            (proj-key ,filename-var)
-            (project-file (org-jira--get-project-file-name proj-key))
-            (project-buffer (or (find-buffer-visiting project-file)
-                                (find-file project-file))))
+            (project-buffer (org-jira--get-buffer-for-issue ,issue-id-var
+                                                             ,filename-var)))
        (with-current-buffer project-buffer
          (org-jira-freeze-ui
            (let ((p (org-find-entry-with-id ,issue-id-var)))

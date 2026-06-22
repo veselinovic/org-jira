@@ -341,6 +341,44 @@ CLOCK:")))
         (kill-buffer buffer))
       (delete-directory org-jira-working-dir t))))
 
+(ert-deftest org-jira-update-worklogs-from-org-clocks-uses-current-buffer-test ()
+  (let ((org-jira-working-dir (make-temp-file "org-jira-test" t))
+        (jiralib-url "https://example.atlassian.net")
+        (org-jira-verbosity nil)
+        added-worklog)
+    (unwind-protect
+        (with-temp-buffer
+          (org-mode)
+          (insert "* AHU-Tickets\n"
+                  "** TODO [[https://example.atlassian.net/browse/AHU-39][Rendered story title]] :AHU_39:\n"
+                  ":PROPERTIES:\n"
+                  ":filename: AHU\n"
+                  ":ID:       AHU-39\n"
+                  ":CUSTOM_ID: AHU-39\n"
+                  ":END:\n"
+                  ":LOGBOOK:\n"
+                  "CLOCK: [2017-04-05 Wed 01:00]--[2017-04-05 Wed 01:46] =>  0:46\n"
+                  "  New local worklog\n"
+                  ":END:\n")
+          (goto-char (point-min))
+          (search-forward "Rendered story title")
+          (cl-letf (((symbol-function 'jiralib-get-worklogs)
+                     (lambda (_issue-id &optional _callback)
+                       '((worklogs . []))))
+                    ((symbol-function 'jiralib-add-worklog)
+                     (lambda (issue-id started time-spent-seconds comment &optional _callback)
+                       (setq added-worklog
+                             (list issue-id started time-spent-seconds comment))))
+                    ((symbol-function 'org-jira-update-worklogs-for-issue)
+                     (lambda (&rest _args))))
+            (org-jira-update-worklogs-from-org-clocks))
+          (should (equal added-worklog
+                         '("AHU-39"
+                           "2017-04-05T01:00:00.000+0000"
+                           2760.0
+                           "New local worklog"))))
+      (delete-directory org-jira-working-dir t))))
+
 
 (provide 'org-jira-t)
 ;;; org-jira-t.el ends here
