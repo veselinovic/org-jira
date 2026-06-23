@@ -1432,14 +1432,31 @@ Expects input in format such as: [2017-04-05 Wed 01:00]--[2017-04-05 Wed 01:46] 
        'worklogs)))
     worklog-hashtable))
 
-;;;###autoload
-(defun org-jira-update-worklogs-from-org-clocks ()
-  "Update or add a worklog based on the org clocks."
-  (interactive)
-  (let* ((issue-id (org-jira-get-from-org 'issue 'key))
-         (filename (org-jira-filename))
-         ;; Fetch all workflogs for this issue
-         (jira-worklogs-ht (org-jira-worklog-to-hashtable issue-id)))
+(defun org-jira--issue-contexts-in-current-buffer ()
+  "Return Jira issue contexts from the current buffer."
+  (let (contexts seen)
+    (save-excursion
+      (save-restriction
+        (widen)
+        (org-map-entries
+         (lambda ()
+           (let ((issue-id (org-entry-get (point) "ID"))
+                 (filename (org-entry-get (point) "filename")))
+             (when (and issue-id
+                        (string-match (jiralib-get-issue-regexp)
+                                      (downcase issue-id))
+                        (not (member issue-id seen)))
+               (push issue-id seen)
+               (push (cons issue-id
+                           (or filename (org-jira--get-proj-key issue-id)))
+                     contexts))))
+         t)))
+    (nreverse contexts)))
+
+(defun org-jira--update-worklogs-from-org-clocks-for-issue (issue-id filename)
+  "Update or add worklogs for ISSUE-ID in FILENAME based on org clocks."
+  ;; Fetch all worklogs for this issue.
+  (let ((jira-worklogs-ht (org-jira-worklog-to-hashtable issue-id)))
     (org-jira-log (format "About to sync worklog for issue: %s in file: %s"
                   issue-id filename))
     (ensure-on-issue-id-with-filename issue-id filename
@@ -1491,6 +1508,26 @@ Expects input in format such as: [2017-04-05 Wed 01:00]--[2017-04-05 Wed 01:46] 
       (org-jira-log (format "Updating worklog from org-jira-update-worklogs-from-org-clocks call"))
       (org-jira-update-worklogs-for-issue issue-id filename)
       )))
+
+;;;###autoload
+(defun org-jira-update-worklogs-from-org-clocks ()
+  "Update or add worklogs based on the org clocks."
+  (interactive)
+  (let ((issue-id (org-jira-parse-issue-id)))
+    (if issue-id
+        (org-jira--update-worklogs-from-org-clocks-for-issue
+         issue-id
+         (or (org-jira-parse-issue-filename)
+             (org-jira--get-proj-key issue-id)))
+      (let ((contexts (org-jira--issue-contexts-in-current-buffer)))
+        (unless contexts
+          (error "Not on an issue region!"))
+        (mapc
+         (lambda (context)
+           (org-jira--update-worklogs-from-org-clocks-for-issue
+            (car context)
+            (cdr context)))
+         contexts)))))
 
 (defun org-jira-update-worklog ()
   "Update a worklog for the current issue."
