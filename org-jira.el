@@ -868,9 +868,11 @@ This format is typically generated from org-jira-worklogs-to-org-clocks call."
   (when (caddr clock-entry) (insert (replace-regexp-in-string "^\\*" "-" (format "  %s\n" (org-jira-decode (caddr clock-entry)))))) ;; No comment is nil, so don't print it
   )
 
-(defun org-jira-logbook-reset (issue-id filename &optional clocks)
+(defun org-jira-logbook-reset (issue-id filename &optional clocks preserve-open-clocks)
   "Find logbook for ISSUE-ID in FILENAME, delete it.
-Re-create it with CLOCKS.  This is used for worklogs."
+Re-create it with CLOCKS.  This is used for worklogs.
+When PRESERVE-OPEN-CLOCKS is non-nil, keep open clock
+segments from the existing logbook."
   (interactive)
   (let ((existing-logbook-p nil))
     ;; See if the LOGBOOK already exists or not.
@@ -880,7 +882,42 @@ Re-create it with CLOCKS.  This is used for worklogs."
           (setq existing-logbook-p t))))
     (ensure-on-issue-id-with-filename issue-id filename
       (let ((drawer-name (or (org-clock-drawer-name) "LOGBOOK")))
-        (if existing-logbook-p
+        (if (and existing-logbook-p preserve-open-clocks)
+            (progn
+              (search-forward (format ":%s:" drawer-name) nil 1 1)
+              (forward-line)
+              (let ((drawer-end
+                     (save-excursion
+                       (search-forward ":END:" nil 1 1)
+                       (copy-marker (line-beginning-position)))))
+                (unwind-protect
+                    (progn
+                      (while (search-forward "CLOCK: " drawer-end t)
+                        (let* ((clock-start (line-beginning-position))
+                               (org-time (buffer-substring-no-properties
+                                          (point) (point-at-eol)))
+                               (clock-end
+                                (save-excursion
+                                  (if (re-search-forward
+                                       "^\\(?:CLOCK\\|:END\\):" drawer-end t)
+                                      (match-beginning 0)
+                                    (marker-position drawer-end)))))
+                          (if (org-jira--finished-org-clock-p org-time)
+                              (progn
+                                (delete-region clock-start clock-end)
+                                (goto-char clock-start))
+                            (goto-char clock-end))))
+                      (goto-char drawer-end)
+                      (let ((insert-point (point))
+                            (separator-inserted-p (and clocks (not (looking-at-p "[ \t]*$")))))
+                        (when separator-inserted-p
+                          (insert "\n")
+                          (goto-char insert-point))
+                        (mapc #'org-jira-insert-clock clocks)
+                        (when (and separator-inserted-p (looking-at-p "\n"))
+                          (delete-char 1))))
+                  (set-marker drawer-end nil))))
+          (if existing-logbook-p
             (progn ;; If we had a logbook, drop it and re-create in a bit.
               (search-forward (format ":%s:" drawer-name) nil 1 1)
               (org-beginning-of-line)
@@ -889,12 +926,12 @@ Re-create it with CLOCKS.  This is used for worklogs."
           (progn ;; Otherwise, create a new one at the end of properties list
             (search-forward ":END:" nil 1 1)
             (forward-line)))
-        (org-insert-drawer nil (format "%s" drawer-name)) ;; Doc says non-nil, but this requires nil
-        (mapc #'org-jira-insert-clock clocks)
-        ;; Clean up leftover newlines (we left 2 behind)
-        (dotimes (n 2)
-          (search-forward-regexp "^$" nil 1 1)
-          (delete-region (point) (min (point-max) (1+ (point)))))))))
+          (org-insert-drawer nil (format "%s" drawer-name)) ;; Doc says non-nil, but this requires nil
+          (mapc #'org-jira-insert-clock clocks)
+          ;; Clean up leftover newlines (we left 2 behind)
+          (dotimes (n 2)
+            (search-forward-regexp "^$" nil 1 1)
+            (delete-region (point) (min (point-max) (1+ (point))))))))))
 
 (defun org-jira-get-worklog-val (key WORKLOG)
   "Return the value associated with KEY of WORKLOG."
@@ -1399,6 +1436,10 @@ Expects input in format such as: [2017-04-05 Wed 01:00]--[2017-04-05 Wed 01:46] 
                                (date-to-time end)
                                (date-to-time start)))))))
 
+(defun org-jira--finished-org-clock-p (org-time)
+  "Return non-nil when ORG-TIME has both start and end timestamps."
+  (string-match-p "\\`\\[[^]\n]+\\]--\\[[^]\n]+\\]" org-time))
+
 (defun org-jira-org-clock-to-jira-worklog (org-time clock-content)
   "Given ORG-TIME and CLOCK-CONTENT, format a jira worklog entry."
   (let ((lines (split-string clock-content "\n"))
@@ -1456,7 +1497,8 @@ Expects input in format such as: [2017-04-05 Wed 01:00]--[2017-04-05 Wed 01:46] 
 (defun org-jira--update-worklogs-from-org-clocks-for-issue (issue-id filename)
   "Update or add worklogs for ISSUE-ID in FILENAME based on org clocks."
   ;; Fetch all worklogs for this issue.
-  (let ((jira-worklogs-ht (org-jira-worklog-to-hashtable issue-id)))
+  (let ((jira-worklogs-ht (org-jira-worklog-to-hashtable issue-id))
+        open-clock-p)
     (org-jira-log (format "About to sync worklog for issue: %s in file: %s"
                   issue-id filename))
     (ensure-on-issue-id-with-filename issue-id filename
@@ -1466,47 +1508,49 @@ Expects input in format such as: [2017-04-05 Wed 01:00]--[2017-04-05 Wed 01:46] 
       (while (search-forward "CLOCK: " nil 1 1)
         (let ((org-time (buffer-substring-no-properties (point) (point-at-eol))))
           (forward-line)
-          ;; See where the stuff ends (what point)
-          (let (next-clock-point)
-            (save-excursion
-              (search-forward-regexp "\\(CLOCK\\|:END\\):" nil 1 1)
-              (setq next-clock-point (point)))
-            (let ((clock-content
-                   (buffer-substring-no-properties (point) next-clock-point)))
-              ;; Update via jiralib call
-              (let* ((worklog (org-jira-org-clock-to-jira-worklog org-time clock-content))
-                     (comment-text (cdr (assoc 'comment worklog)))
-                     (comment-text (if (string= (org-trim comment-text) "") nil comment-text)))
-                (if (cdr (assoc 'worklog-id worklog))
-                    ;; If there is a worklog in jira for this ID, check if the worklog has changed.
-                    ;; If it has changed, update the worklog.
-                    ;; If it has not changed, skip.
-                    (let ((jira-worklog (gethash (cdr (assoc 'worklog-id worklog)) jira-worklogs-ht)))
-                      (when (and jira-worklog
-                                 ;; Check if the entries are differing lengths.
-                                 (or (not (= (cdr (assoc 'timeSpentSeconds jira-worklog))
-                                         (cdr (assoc 'time-spent-seconds worklog))))
-                                 ;; Check if the entries start at different times.
-                                     (not (string= (cdr (assoc 'started jira-worklog))
-                                               (cdr (assoc 'started worklog))))))
-                        (jiralib-update-worklog
-                         issue-id
-                         (cdr (assoc 'worklog-id worklog))
-                         (cdr (assoc 'started worklog))
-                         (cdr (assoc 'time-spent-seconds worklog))
-                         comment-text
-                         nil))) ; no callback - synchronous
-                  ;; else
-                  (jiralib-add-worklog
-                   issue-id
-                   (cdr (assoc 'started worklog))
-                   (cdr (assoc 'time-spent-seconds worklog))
-                   comment-text
-                   nil) ; no callback - synchronous
-                  )
-                )))))
+          (if (org-jira--finished-org-clock-p org-time)
+              ;; See where the stuff ends (what point)
+              (let (next-clock-point)
+                (save-excursion
+                  (search-forward-regexp "\\(CLOCK\\|:END\\):" nil 1 1)
+                  (setq next-clock-point (point)))
+                (let ((clock-content
+                       (buffer-substring-no-properties (point) next-clock-point)))
+                  ;; Update via jiralib call
+                  (let* ((worklog (org-jira-org-clock-to-jira-worklog org-time clock-content))
+                         (comment-text (cdr (assoc 'comment worklog)))
+                         (comment-text (if (string= (org-trim comment-text) "") nil comment-text)))
+                    (if (cdr (assoc 'worklog-id worklog))
+                        ;; If there is a worklog in jira for this ID, check if the worklog has changed.
+                        ;; If it has changed, update the worklog.
+                        ;; If it has not changed, skip.
+                        (let ((jira-worklog (gethash (cdr (assoc 'worklog-id worklog)) jira-worklogs-ht)))
+                          (when (and jira-worklog
+                                     ;; Check if the entries are differing lengths.
+                                     (or (not (= (cdr (assoc 'timeSpentSeconds jira-worklog))
+                                             (cdr (assoc 'time-spent-seconds worklog))))
+                                     ;; Check if the entries start at different times.
+                                         (not (string= (cdr (assoc 'started jira-worklog))
+                                                   (cdr (assoc 'started worklog))))))
+                            (jiralib-update-worklog
+                             issue-id
+                             (cdr (assoc 'worklog-id worklog))
+                             (cdr (assoc 'started worklog))
+                             (cdr (assoc 'time-spent-seconds worklog))
+                             comment-text
+                             nil))) ; no callback - synchronous
+                      ;; else
+                      (jiralib-add-worklog
+                       issue-id
+                       (cdr (assoc 'started worklog))
+                       (cdr (assoc 'time-spent-seconds worklog))
+                       comment-text
+                       nil) ; no callback - synchronous
+                      )
+                    )))
+            (setq open-clock-p t))))
       (org-jira-log (format "Updating worklog from org-jira-update-worklogs-from-org-clocks call"))
-      (org-jira-update-worklogs-for-issue issue-id filename)
+      (org-jira-update-worklogs-for-issue issue-id filename open-clock-p)
       )))
 
 ;;;###autoload
@@ -1740,8 +1784,10 @@ purpose of wiping an old subtree."
         (filename (org-jira-filename)))
     (org-jira-update-worklogs-for-issue issue-id filename)))
 
-(defun org-jira-update-worklogs-for-issue (issue-id filename)
-  "Update the worklogs for the current ISSUE-ID located in FILENAME."
+(defun org-jira-update-worklogs-for-issue (issue-id filename &optional preserve-open-clocks)
+  "Update the worklogs for the current ISSUE-ID located in FILENAME.
+When PRESERVE-OPEN-CLOCKS is non-nil, keep open clock
+segments from the existing logbook."
   (org-jira-log (format "org-jira-update-worklogs-for-issue id: %s filename: %s"
                 issue-id filename))
   ;; Run the call
@@ -1754,7 +1800,8 @@ purpose of wiping an old subtree."
                        issue-id filename))
          (org-jira-logbook-reset issue-id filename
           (org-jira-sort-org-clocks (org-jira-worklogs-to-org-clocks
-                                     (jiralib-worklog-import--filter-apply worklogs)))))))))
+                                     (jiralib-worklog-import--filter-apply worklogs)))
+          preserve-open-clocks))))))
 
 ;;;###autoload
 (defun org-jira-unassign-issue ()

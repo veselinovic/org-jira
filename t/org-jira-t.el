@@ -379,6 +379,57 @@ CLOCK:")))
                            "New local worklog"))))
       (delete-directory org-jira-working-dir t))))
 
+(ert-deftest org-jira-update-worklogs-from-org-clocks-syncs-finished-and-preserves-open-test ()
+  (let ((org-jira-working-dir (make-temp-file "org-jira-test" t))
+        (jiralib-url "https://example.atlassian.net")
+        (org-jira-verbosity nil)
+        added-worklogs)
+    (unwind-protect
+        (with-temp-buffer
+          (org-mode)
+          (insert "* AHU-Tickets\n"
+                  "** TODO [[https://example.atlassian.net/browse/AHU-39][Rendered story title]] :AHU_39:\n"
+                  ":PROPERTIES:\n"
+                  ":filename: AHU\n"
+                  ":ID:       AHU-39\n"
+                  ":CUSTOM_ID: AHU-39\n"
+                  ":END:\n"
+                  ":LOGBOOK:\n"
+                  "CLOCK: [2026-06-24 Wed 10:20]\n"
+                  "  Open local worklog\n"
+                  "CLOCK: [2026-06-23 Tue 14:04]--[2026-06-23 Tue 14:42] =>  0:38\n"
+                  "  :id: 1199613\n"
+                  ":END:\n")
+          (goto-char (point-min))
+          (search-forward "Rendered story title")
+          (cl-letf (((symbol-function 'jiralib-get-worklogs)
+                     (lambda (_issue-id &optional callback)
+                       (let ((response
+                              '((worklogs .
+                                          [((started . "2026-06-23T14:04:00.000+0000")
+                                            (timeSpentSeconds . 2280)
+                                            (comment . nil)
+                                            (id . "1199613"))]))))
+                         (if callback
+                             (funcall callback :data response)
+                           '((worklogs . []))))))
+                    ((symbol-function 'jiralib-add-worklog)
+                     (lambda (issue-id started time-spent-seconds comment &optional _callback)
+                       (push (list issue-id started time-spent-seconds comment)
+                             added-worklogs))))
+            (org-jira-update-worklogs-from-org-clocks))
+          (should (equal added-worklogs nil))
+          (should (string-match-p
+                   (regexp-quote "  :id: 1199613")
+                   (buffer-string)))
+          (should (string-match-p
+                   (regexp-quote "CLOCK: [2026-06-24 Wed 10:20]
+  Open local worklog
+CLOCK: [2026-06-23 Tue 14:04]--[2026-06-23 Tue 14:42] =>  0:38
+  :id: 1199613")
+                   (buffer-string))))
+      (delete-directory org-jira-working-dir t))))
+
 (ert-deftest org-jira-update-worklogs-from-org-clocks-uses-issue-in-current-file-test ()
   (let ((org-jira-working-dir (make-temp-file "org-jira-test" t))
         (jiralib-url "https://example.atlassian.net")
