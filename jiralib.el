@@ -1139,46 +1139,26 @@ Auxiliary Notes:
   If PREDICATE-FN-LST contains multiple predicate functions, each predicate filters operates as a clause in an AND match.  In effect, a worklog must match all predicates to be returned.
   The variable 'jiralib-user-login-name is used by many lambda filters."
 
-  (let
-      ((unwrap-worklog-records-fn)
-       (rewrap-worklog-records-fn)
-       (predicate-fn-lst)
-       (worklogs worklog-obj)
-       (predicate-fn))
-    ;; let-body
-    (progn
-      (setq unwrap-worklog-records-fn
-            (if (and
-                 (boundp 'unwrap-worklog-records-fn)
-                 (functionp unwrap-worklog-records-fn))
-                unwrap-worklog-records-fn
-              (lambda (x) (cl-coerce x 'list))))
-      (setq rewrap-worklog-records-fn
-            (if (and
-                 (boundp 'rewrap-worklog-records-fn)
-                 (functionp rewrap-worklog-records-fn))
-                rewrap-worklog-records-fn
-              (lambda (x) (remove 'nil (cl-coerce x 'vector)))))
-      (setq predicate-fn-lst
-            (if (and (boundp 'predicate-fn-lst)
-                     (not (null predicate-fn-lst))
-                     (listp predicate-fn-lst))
-                predicate-fn-lst
-              (mapcar 'caddr
-                      (remove 'nil
-                              (mapcar (lambda (x) (unless (null (car x)) x))
-                                      jiralib-worklog-import--filters-alist)))))
-      ;; final condition/sanity checks before processing
-      (cond
-       ;; pass cases, don't apply filters, return unaltered worklog-obj
-       ((or (not (boundp 'predicate-fn-lst)) (not (listp predicate-fn-lst)) (null predicate-fn-lst))
-        worklog-obj)
-       ;; default-case, apply worklog filters and return only matching worklogs
-       (t
-        (setq worklogs (funcall unwrap-worklog-records-fn worklogs))
-        (while (setq predicate-fn (pop predicate-fn-lst))
-          (setq worklogs (mapcar predicate-fn worklogs)))
-        (funcall rewrap-worklog-records-fn worklogs))))))
+  (let ((unwrap-fn (if (functionp unwrap-worklog-records-fn)
+                       unwrap-worklog-records-fn
+                     (lambda (x) (cl-coerce x 'list))))
+        (rewrap-fn (if (functionp rewrap-worklog-records-fn)
+                       rewrap-worklog-records-fn
+                     (lambda (x) (remove nil (cl-coerce x 'vector)))))
+        (predicates (if (and predicate-fn-lst (listp predicate-fn-lst))
+                        predicate-fn-lst
+                      (mapcar #'caddr
+                              (remove nil
+                                      (mapcar (lambda (x)
+                                                (unless (null (car x)) x))
+                                              jiralib-worklog-import--filters-alist)))))
+        (worklogs worklog-obj))
+    (if (or (not (listp predicates)) (null predicates))
+        worklog-obj
+      (setq worklogs (funcall unwrap-fn worklogs))
+      (while predicates
+        (setq worklogs (mapcar (pop predicates) worklogs)))
+      (funcall rewrap-fn worklogs))))
 
 
 (defun jiralib-get-board (id &optional callback)

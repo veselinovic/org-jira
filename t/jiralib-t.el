@@ -48,5 +48,42 @@
    (string= "2017-01-01T00:00:00.000+0000"
             (jiralib-format-datetime "2017-01-01 00:00:00"))))
 
+(ert-deftest jiralib-worklog-import-filter-apply-uses-enabled-custom-filters-test ()
+  (let* ((ranko-worklog '((id . "mine")
+                          (author
+                           (emailAddress . "foo@bar.com"))))
+         (other-worklog '((id . "other")
+                          (author
+                           (emailAddress . "someone.else@mgb.ch"))))
+         (jiralib-worklog-import--filters-alist
+          (list
+           (list t "Ranko worklogs only"
+                 (lambda (worklog)
+                   (when (string= "foo@bar.com"
+                                  (cdr (assoc 'emailAddress
+                                              (cdr (assoc 'author worklog)))))
+                     worklog)))))
+         (result (jiralib-worklog-import--filter-apply
+                  (vector ranko-worklog other-worklog))))
+    (should (equal (append result nil) (list ranko-worklog)))))
+
+(ert-deftest jiralib-worklog-import-filter-apply-honors-explicit-predicates-test ()
+  (let* ((ranko-worklog '((id . "mine")
+                          (author
+                           (emailAddress . "foo@bar.com"))))
+         (other-worklog '((id . "other")
+                          (author
+                           (emailAddress . "someone.else@mgb.ch"))))
+         (result
+          (jiralib-worklog-import--filter-apply
+           (vector ranko-worklog other-worklog)
+           (list
+            (lambda (worklog)
+              (when (string= "foo@bar.com"
+                             (cdr (assoc 'emailAddress
+                                         (cdr (assoc 'author worklog)))))
+                worklog))))))
+    (should (equal (append result nil) (list ranko-worklog)))))
+
 (provide 'jiralib-t)
 ;;; jiralib-t.el ends here
