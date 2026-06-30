@@ -282,6 +282,56 @@ CLOCK:")))
                    (regexp-quote "** TODO [[https://example.atlassian.net/browse/AHU-39][Rendered story title]]")
                    (buffer-string))))))
 
+(ert-deftest org-jira-add-comment-to-get-issue-here-issue-test ()
+  (let ((jiralib-url "https://example.atlassian.net")
+        (org-jira-working-dir (make-temp-file "org-jira-test" t))
+        (org-jira-download-comments nil)
+        (org-jira-worklog-sync-p nil)
+        (org-jira-deadline-duedate-sync-p nil)
+        (org-tags-column -80)
+        added-issue-id
+        added-comment
+        fetched-comments-for)
+    (unwind-protect
+        (with-temp-buffer
+          (org-mode)
+          (cl-letf (((symbol-function 'jiralib-get-issue)
+                     (lambda (_id &optional _callback)
+                       (org-jira-t--issue-data)))
+                    ((symbol-function 'jiralib-add-comment)
+                     (lambda (issue-id comment &optional callback)
+                       (setq added-issue-id issue-id)
+                       (setq added-comment comment)
+                       (when callback
+                         (with-temp-buffer
+                           (funcall callback :data nil)))))
+                    ((symbol-function 'jiralib-get-comments)
+                     (lambda (issue-id &optional callback)
+                       (setq fetched-comments-for issue-id)
+                       (when callback
+                         (with-temp-buffer
+                           (funcall callback
+                                    :data
+                                    '((comments .
+                                                 [((id . "20001")
+                                                   (author . ((displayName . "Ada Lovelace")))
+                                                   (body . "Added from here")
+                                                   (created . "2026-06-02")
+                                                   (updated . "2026-06-02"))]))))))))
+            (org-jira-get-issue-here "AHU-39")
+            (goto-char (point-min))
+            (org-jira-add-comment "AHU-39" "AHU" "Added from here"))
+          (should (string= "AHU-39" added-issue-id))
+          (should (string= "Added from here" added-comment))
+          (should (string= "AHU-39" fetched-comments-for))
+          (should (string-match-p
+                   (regexp-quote "*** Comment: Ada Lovelace")
+                   (buffer-string)))
+          (should (string-match-p
+                   (regexp-quote "  Added from here")
+                   (buffer-string))))
+      (delete-directory org-jira-working-dir t))))
+
 (ert-deftest org-jira-render-issue-links-key-in-heading-test ()
   (let* ((org-jira-working-dir (make-temp-file "org-jira-test" t))
          (jiralib-url "https://example.atlassian.net")

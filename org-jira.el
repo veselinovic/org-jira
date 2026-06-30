@@ -442,15 +442,19 @@ See `org-default-priority' for more info."
                   (widen)
                   (org-find-entry-with-id issue-id)))))))
 
-(defun org-jira--get-buffer-for-issue (issue-id filename)
-  "Return the buffer containing ISSUE-ID, falling back to FILENAME."
-  (let ((current-buffer (current-buffer)))
-    (if (org-jira--buffer-has-issue-p current-buffer issue-id)
-        current-buffer
+(defun org-jira--get-buffer-for-issue (issue-id filename &optional preferred-buffer)
+  "Return the buffer containing ISSUE-ID, falling back to FILENAME.
+
+When PREFERRED-BUFFER is non-nil, check it before the current
+buffer.  This lets async callbacks update issues rendered outside
+the standard project file."
+  (or (cl-find-if (lambda (buffer)
+                    (org-jira--buffer-has-issue-p buffer issue-id))
+                  (delq nil (list preferred-buffer (current-buffer))))
       (let* ((proj-key filename)
              (project-file (org-jira--get-project-file-name proj-key)))
         (or (find-buffer-visiting project-file)
-            (find-file project-file))))))
+            (find-file project-file)))))
 
 ;; TODO: Merge these 3 ensure macros (or, scrap all but ones that work on Issue)
 (defmacro ensure-on-issue-id (issue-id &rest body)
@@ -497,9 +501,7 @@ See `org-default-priority' for more info."
     `(let ((,Issue-var ,Issue))
          (with-slots (issue-id) ,Issue-var
            (let* ((proj-key (org-jira--get-proj-key-from-issue ,Issue-var))
-                  (project-file (org-jira--get-project-file-name proj-key))
-                  (project-buffer (or (find-buffer-visiting project-file)
-                                      (find-file project-file))))
+                  (project-buffer (org-jira--get-buffer-for-issue issue-id proj-key)))
              (with-current-buffer project-buffer
                (org-jira-freeze-ui
                  (let ((p (org-find-entry-with-id issue-id)))
@@ -1380,23 +1382,38 @@ ISSUES is a list of `org-jira-sdk-issue' records."
          (comment-id (org-jira-get-from-org 'comment 'id))
          (comment (replace-regexp-in-string "^  " "" (org-jira-get-comment-body comment-id))))
     (lexical-let ((issue-id issue-id)
-                  (filename filename))
+                  (filename filename)
+                  (source-buffer (current-buffer)))
       (let ((callback-edit
              (cl-function
               (lambda (&key _data &allow-other-keys)
-                (ensure-on-issue-id-with-filename
-                    issue-id filename
-                    (org-jira-update-comments-for-current-issue)))))
+                (if (buffer-live-p source-buffer)
+                    (with-current-buffer source-buffer
+                      (ensure-on-issue-id-with-filename
+                          issue-id filename
+                          (org-jira-update-comments-for-current-issue)))
+                  (ensure-on-issue-id-with-filename
+                      issue-id filename
+                      (org-jira-update-comments-for-current-issue))))))
             (callback-add
              (cl-function
               (lambda (&key _data &allow-other-keys)
-                (ensure-on-issue-id-with-filename
-                    issue-id filename
-                    ;; @TODO :optim: Has to be a better way to do this
-                    ;; than delete region (like update the unmarked
-                    ;; one)
-                    (org-jira-delete-current-comment)
-                    (org-jira-update-comments-for-current-issue))))))
+                (if (buffer-live-p source-buffer)
+                    (with-current-buffer source-buffer
+                      (ensure-on-issue-id-with-filename
+                          issue-id filename
+                          ;; @TODO :optim: Has to be a better way to do this
+                          ;; than delete region (like update the unmarked
+                          ;; one)
+                          (org-jira-delete-current-comment)
+                          (org-jira-update-comments-for-current-issue)))
+                  (ensure-on-issue-id-with-filename
+                      issue-id filename
+                      ;; @TODO :optim: Has to be a better way to do this
+                      ;; than delete region (like update the unmarked
+                      ;; one)
+                      (org-jira-delete-current-comment)
+                      (org-jira-update-comments-for-current-issue)))))))
         (if comment-id
             (jiralib-edit-comment issue-id comment-id comment callback-edit)
           (jiralib-add-comment issue-id comment callback-add))))))
@@ -1409,15 +1426,20 @@ ISSUES is a list of `org-jira-sdk-issue' records."
           (comment (read-string (format  "Comment (%s): " issue-id))))
      (list issue-id filename comment)))
   (lexical-let ((issue-id issue-id)
-                (filename filename))
+                (filename filename)
+                (source-buffer (current-buffer)))
     (ensure-on-issue-id-with-filename issue-id filename
       (goto-char (point-max))
       (jiralib-add-comment
        issue-id comment
        (cl-function
         (lambda (&key _data &allow-other-keys)
-          (ensure-on-issue-id-with-filename issue-id filename
-            (org-jira-update-comments-for-current-issue))))))))
+          (if (buffer-live-p source-buffer)
+              (with-current-buffer source-buffer
+                (ensure-on-issue-id-with-filename issue-id filename
+                  (org-jira-update-comments-for-current-issue)))
+            (ensure-on-issue-id-with-filename issue-id filename
+              (org-jira-update-comments-for-current-issue)))))))))
 
 (defun org-jira-org-clock-to-date (org-time)
   "Convert ORG-TIME formatted date into a plain date string."
@@ -1640,50 +1662,59 @@ Expects input in format such as: [2017-04-05 Wed 01:00]--[2017-04-05 Wed 01:46] 
        org-jira-maybe-reverse-comments
        (cl-remove-if #'org-jira-isa-ignored-comment?)))
 
-(defun org-jira--render-comment (Issue Comment)
-  (with-slots (issue-id) Issue
-    (with-slots (comment-id author headline created updated body) Comment
-      (org-jira-log (format "Rendering a comment: %s" body))
-      (ensure-on-issue-Issue Issue
-        (setq p (org-find-entry-with-id comment-id))
-        (when (and p (>= p (point-min))
-                   (<= p (point-max)))
-          (goto-char p)
-          (org-narrow-to-subtree)
-          (delete-region (point-min) (point-max)))
-        (goto-char (point-max))
-        (unless (looking-at "^")
-          (insert "\n"))
-        (insert "*** ")
-        (org-jira-insert headline "\n")
-        (org-narrow-to-subtree)
-        (org-jira-entry-put (point) "ID" comment-id)
-        (org-jira-entry-put (point) "created" created)
-        (unless (string= created updated)
-          (org-jira-entry-put (point) "updated" updated))
-        (goto-char (point-max))
-        ;;  Insert 2 spaces of indentation so Jira markup won't cause org-markup
-        (org-jira-insert (replace-regexp-in-string "^" "  " (or body "")))))))
+(defun org-jira--render-comment (Issue Comment &optional target-buffer)
+  (let ((render-buffer (if (and target-buffer (buffer-live-p target-buffer))
+                           target-buffer
+                         (current-buffer))))
+    (with-current-buffer render-buffer
+      (with-slots (issue-id) Issue
+        (with-slots (comment-id author headline created updated body) Comment
+          (org-jira-log (format "Rendering a comment: %s" body))
+          (ensure-on-issue-Issue Issue
+            (setq p (org-find-entry-with-id comment-id))
+            (when (and p (>= p (point-min))
+                       (<= p (point-max)))
+              (goto-char p)
+              (org-narrow-to-subtree)
+              (delete-region (point-min) (point-max)))
+            (goto-char (point-max))
+            (unless (looking-at "^")
+              (insert "\n"))
+            (insert "*** ")
+            (org-jira-insert headline "\n")
+            (org-narrow-to-subtree)
+            (org-jira-entry-put (point) "ID" comment-id)
+            (org-jira-entry-put (point) "created" created)
+            (unless (string= created updated)
+              (org-jira-entry-put (point) "updated" updated))
+            (goto-char (point-max))
+            ;;  Insert 2 spaces of indentation so Jira markup won't cause org-markup
+            (org-jira-insert (replace-regexp-in-string "^" "  " (or body "")))))))))
 
-(defun org-jira-update-comments-for-issue (Issue)
+(defun org-jira-update-comments-for-issue (Issue &optional target-buffer)
   "Update the comments for the specified ISSUE issue."
-  (with-slots (issue-id) Issue
-    (jiralib-get-comments
-     issue-id
-     (org-jira-with-callback
-       (org-jira-log "In the callback for org-jira-update-comments-for-issue.")
-       (-->
-        (org-jira-find-value cb-data 'comments)
-        (org-jira-extract-comments-from-data it)
-        (mapc (lambda (Comment) (org-jira--render-comment Issue Comment)) it))))))
+  (lexical-let ((Issue Issue)
+                (target-buffer (or target-buffer (current-buffer))))
+    (with-slots (issue-id) Issue
+      (jiralib-get-comments
+       issue-id
+       (org-jira-with-callback
+         (org-jira-log "In the callback for org-jira-update-comments-for-issue.")
+         (-->
+          (org-jira-find-value cb-data 'comments)
+          (org-jira-extract-comments-from-data it)
+          (mapc (lambda (Comment)
+                  (org-jira--render-comment Issue Comment target-buffer))
+                it)))))))
 
 (defun org-jira-update-comments-for-current-issue ()
   "Update comments for the current issue."
   (org-jira-log "About to update comments for current issue.")
   (let ((Issue (make-instance 'org-jira-sdk-issue
                               :issue-id (org-jira-get-from-org 'issue 'key)
-                              :filename (org-jira-filename))))
-    (-> Issue org-jira-update-comments-for-issue)))
+                              :filename (org-jira-filename)))
+        (target-buffer (current-buffer)))
+    (org-jira-update-comments-for-issue Issue target-buffer)))
 
 (defun org-jira-delete-subtree ()
   "Derived from org-cut-subtree.
