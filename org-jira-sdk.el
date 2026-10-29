@@ -73,7 +73,7 @@
   (with-slots (id hydrate-fn) rec
     (funcall hydrate-fn id callback)))
 
-(cl-defgeneric org-jira-sdk-from-data ((rec org-jira-sdk-record)))
+(cl-defgeneric org-jira-sdk-from-data (rec))
 
 (cl-defmethod org-jira-sdk-dump ((rec org-jira-sdk-record))
   "A decent pretty print/object dump for working with the class items."

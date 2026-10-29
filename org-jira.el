@@ -129,7 +129,6 @@
 
 ;;; Code:
 
-(eval-when-compile (require 'cl))
 (require 'org)
 (require 'org-clock)
 (require 'cl-lib)
@@ -1032,7 +1031,7 @@ jql."
   (interactive)
   (let ((jira-id (thing-at-point 'symbol)))
     (insert (format "[[%s][%s]] - %s"
-                    (concatenate 'string jiralib-url "browse/" jira-id) jira-id
+                    (concat jiralib-url "browse/" jira-id) jira-id
                     (cdr (assoc 'summary (car (org-jira-get-issue-by-id jira-id))))))))
 
 ;;;###autoload
@@ -1180,7 +1179,7 @@ Will send a list of org-jira-sdk-issue objects to the list printer."
           (org-jira-sdk-create-issues-from-data-list-with-filename filename it)
           org-jira-get-issues)
      (setq org-jira-proj-key-override nil)
-     (let ((next (rest list)))
+     (let ((next (cdr list)))
        (when next
          (org-jira-get-issues-from-custom-jql next))))))
 
@@ -1388,9 +1387,9 @@ ISSUES is a list of `org-jira-sdk-issue' records."
          (filename (org-jira-filename))
          (comment-id (org-jira-get-from-org 'comment 'id))
          (comment (replace-regexp-in-string "^  " "" (org-jira-get-comment-body comment-id))))
-    (lexical-let ((issue-id issue-id)
-                  (filename filename)
-                  (source-buffer (current-buffer)))
+    (let ((issue-id issue-id)
+          (filename filename)
+          (source-buffer (current-buffer)))
       (let ((callback-edit
              (cl-function
               (lambda (&key _data &allow-other-keys)
@@ -1432,9 +1431,9 @@ ISSUES is a list of `org-jira-sdk-issue' records."
           (filename (org-jira-filename))
           (comment (read-string (format  "Comment (%s): " issue-id))))
      (list issue-id filename comment)))
-  (lexical-let ((issue-id issue-id)
-                (filename filename)
-                (source-buffer (current-buffer)))
+  (let ((issue-id issue-id)
+        (filename filename)
+        (source-buffer (current-buffer)))
     (ensure-on-issue-id-with-filename issue-id filename
       (goto-char (point-max))
       (jiralib-add-comment
@@ -1474,9 +1473,9 @@ Expects input in format such as: [2017-04-05 Wed 01:00]--[2017-04-05 Wed 01:46] 
   (let ((lines (split-string clock-content "\n"))
         worklog-id)
     ;; See if we look like we have an id
-    (when (string-match ":id:" (first lines))
+    (when (string-match ":id:" (car lines))
       (setq worklog-id
-            (replace-regexp-in-string "^.*:id: \\([0-9]*\\)$" "\\1" (first lines)))
+            (replace-regexp-in-string "^.*:id: \\([0-9]*\\)$" "\\1" (car lines)))
       (when (> (string-to-number worklog-id) 0) ;; pop off the first id line if we found it valid
         (setq lines (cdr lines))))
     (setq lines (reverse (cdr (reverse lines)))) ;; drop last line
@@ -1700,8 +1699,8 @@ Expects input in format such as: [2017-04-05 Wed 01:00]--[2017-04-05 Wed 01:46] 
 
 (defun org-jira-update-comments-for-issue (Issue &optional target-buffer)
   "Update the comments for the specified ISSUE issue."
-  (lexical-let ((Issue Issue)
-                (target-buffer (or target-buffer (current-buffer))))
+  (let ((Issue Issue)
+        (target-buffer (or target-buffer (current-buffer))))
     (with-slots (issue-id) Issue
       (jiralib-get-comments
        issue-id
@@ -1751,7 +1750,7 @@ purpose of wiping an old subtree."
 (defun org-jira-update-attachments-for-current-issue ()
   "Update the attachments for the current issue."
   (when jiralib-use-restapi
-    (lexical-let ((issue-id (org-jira-get-from-org 'issue 'key)))
+    (let ((issue-id (org-jira-get-from-org 'issue 'key)))
       ;; Run the call
       (jiralib-get-attachments
        issue-id
@@ -2115,7 +2114,7 @@ that should be bound to an issue."
   ;; See: https://github.com/ahungry/org-jira/issues/319
   ;; See: https://github.com/ahungry/org-jira/issues/296
   ;; See: https://github.com/ahungry/org-jira/issues/316
-  (lexical-let ((my-key key))
+  (let ((my-key key))
     (ensure-on-issue
       (cond ((eq my-key 'description)
              (org-goto-first-child)
@@ -2622,7 +2621,7 @@ it is a symbol, it will be converted to string."
 
 (defun org-jira-url-copy-file (url newname)
   "Similar to url-copy-file but async."
-  (lexical-let ((newname newname))
+  (let ((newname newname))
     (url-retrieve
      url
      (lambda (status)
@@ -2676,12 +2675,10 @@ See `org-jira-get-issues-from-filter'."
    (list (completing-read "Filter: " (mapcar 'cdr (jiralib-get-saved-filters)))))
   (org-jira-get-issues-headonly (jiralib-get-issues-from-filter (car (rassoc filter (jiralib-get-saved-filters))))))
 
-(org-add-link-type "jira" 'org-jira-open)
-
-;; This was only added in org 9.0, not sure all org users will have
-;; that version, so keep the deprecated one from above for now.
-
-;;(org-link-set-parameters "jira" ((:follow . 'org-jira-open)))
+;; Keep compatibility with Org versions before 9.0.
+(if (fboundp 'org-link-set-parameters)
+    (org-link-set-parameters "jira" :follow #'org-jira-open)
+  (org-add-link-type "jira" #'org-jira-open))
 
 (defun org-jira-open (path)
   "Open a Jira Link from PATH."
