@@ -298,6 +298,10 @@ CLOCK:")))
           (cl-letf (((symbol-function 'jiralib-get-issue)
                      (lambda (_id &optional _callback)
                        (org-jira-t--issue-data)))
+                    ((symbol-function 'read-string)
+                     (lambda (prompt &rest _args)
+                       (should (string= "Comment (AHU-39): " prompt))
+                       "Added from here"))
                     ((symbol-function 'jiralib-add-comment)
                      (lambda (issue-id comment &optional callback)
                        (setq added-issue-id issue-id)
@@ -320,7 +324,8 @@ CLOCK:")))
                                                    (updated . "2026-06-02"))]))))))))
             (org-jira-get-issue-here "AHU-39")
             (goto-char (point-min))
-            (org-jira-add-comment "AHU-39" "AHU" "Added from here"))
+            (search-forward "Rendered description")
+            (call-interactively #'org-jira-add-comment))
           (should (string= "AHU-39" added-issue-id))
           (should (string= "Added from here" added-comment))
           (should (string= "AHU-39" fetched-comments-for))
@@ -331,6 +336,42 @@ CLOCK:")))
                    (regexp-quote "  Added from here")
                    (buffer-string))))
       (delete-directory org-jira-working-dir t))))
+
+(ert-deftest org-jira-get-issue-val-from-org-finds-ancestor-test ()
+  (dolist (level '(1 2 3))
+    (with-temp-buffer
+      (org-mode)
+      (insert (make-string level ?*) " TODO Issue title\n"
+              ":PROPERTIES:\n:ID: AHU-39\n:filename: AHU\n:END:\n"
+              (make-string (1+ level) ?*) " description:\nDescription body\n"
+              (make-string (+ level 2) ?*) " Comment: Ada\n"
+              ":PROPERTIES:\n:ID: 20001\n:END:\nComment body\n")
+      (goto-char (point-min))
+      (search-forward "Issue title")
+      (should (string= "AHU-39" (org-jira-get-issue-val-from-org 'id)))
+      (search-forward "Description body")
+      (should (string= "AHU-39" (org-jira-get-issue-val-from-org 'key)))
+      (search-forward "Comment body")
+      (org-narrow-to-subtree)
+      (let ((original-point (point))
+            (original-min (point-min))
+            (original-max (point-max)))
+        (should (string= "AHU-39" (org-jira-get-issue-val-from-org 'id)))
+        (should (string= "AHU" (org-jira-filename)))
+        (should (string= "Issue title"
+                         (org-jira-get-issue-val-from-org 'summary)))
+        (should (= original-point (point)))
+        (should (= original-min (point-min)))
+        (should (= original-max (point-max)))))))
+
+(ert-deftest org-jira-get-issue-val-from-org-rejects-unrelated-heading-test ()
+  (with-temp-buffer
+    (org-mode)
+    (insert "* AHU-Tickets\n** TODO Issue title\n"
+            ":PROPERTIES:\n:ID: AHU-39\n:END:\n"
+            "* Notes\nUnrelated text\n")
+    (goto-char (point-max))
+    (should-error (org-jira-get-issue-val-from-org 'id))))
 
 (ert-deftest org-jira-render-issue-links-key-in-heading-test ()
   (let* ((org-jira-working-dir (make-temp-file "org-jira-test" t))

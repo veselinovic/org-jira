@@ -386,17 +386,24 @@ See `org-default-priority' for more info."
 (defun org-jira-log (s) (when (eq 'debug org-jira-verbosity) (message "%s" s)))
 
 (defmacro ensure-on-issue (&rest body)
-  "Make sure we are on an issue heading, before executing BODY."
+  "Find the enclosing issue heading before executing BODY."
   (declare (debug t)
            (indent 0))
   `(save-excursion
     (save-restriction
       (widen)
-      (unless (looking-at "^\\*\\* ")
-        (search-backward-regexp "^\\*\\* " nil t)) ; go to top heading
-      (let ((org-jira-id (org-jira-id)))
-        (unless (and org-jira-id (string-match (jiralib-get-issue-regexp) (downcase org-jira-id)))
-          (error "Not on an issue region!")))
+      (when (org-before-first-heading-p)
+        (error "Not on an issue region!"))
+      (org-back-to-heading t)
+      (let ((on-issue nil))
+        (while (not on-issue)
+          (let ((org-jira-id (org-jira-id)))
+            (setq on-issue
+                  (and org-jira-id
+                       (string-match (jiralib-get-issue-regexp)
+                                     (downcase org-jira-id)))))
+          (unless (or on-issue (org-up-heading-safe))
+            (error "Not on an issue region!"))))
       ,@body)))
 
 (defmacro org-jira-with-callback (&rest body)
