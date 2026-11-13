@@ -157,6 +157,13 @@ Use these commands from an issue heading or any of its child headings:
 - `M-x org-jira-refresh-issue` (`C-c ir`): refresh the linked issue from Jira
   in place in the current buffer, preserving its heading level and local notes.
 
+- `M-x org-jira-update-issue-labels` (`C-c il`): edit labels on the issue's
+  property drawer and sync to Jira. Empty input clears all labels.
+
+
+The labels command sends only labels to Jira and updates the issue's Org
+property in the current buffer after success. It respects
+`org-jira-property-overrides`.
 
 ### Keybinds
 Some of the important keybindings:

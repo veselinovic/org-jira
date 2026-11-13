@@ -2042,13 +2042,47 @@ apply the response there even if the user switches buffers."
 
 ;;;###autoload
 (defun org-jira-update-issue-labels ()
-  "Update jira issue labels."
+  "Update Jira labels and the enclosing issue's Org property."
   (interactive)
-  (let* ((labels (org-jira-parse-issue-labels))
-         (updated-labels (org-jira-read-labels (format "%s, " labels)))
-         (updated-labels-string (mapconcat 'identity updated-labels ", ")))
-    (org-set-property "labels" updated-labels-string)
-    (org-jira-update-issue)))
+  (ensure-on-issue
+    (let* ((labels (org-jira-get-issue-val-from-org 'labels))
+           (updated-labels (org-jira-read-labels labels)))
+      (org-jira--update-issue-property
+       "labels" 'labels (or updated-labels [])
+       (mapconcat #'identity updated-labels ", ")))))
+
+(defun org-jira--update-issue-property (property field value display-value)
+  "Update Jira FIELD with VALUE, then set Org PROPERTY to DISPLAY-VALUE.
+Only send the selected field.  Change the enclosing issue's property
+after Jira confirms success, even if the user has switched buffers."
+  (ensure-on-issue
+    (let ((issue-id (org-jira-id))
+          (buffer (current-buffer))
+          (overrides org-jira-property-overrides))
+      ;; jiralib-call drops callbacks when it has to log in first.
+      (unless jiralib-token
+        (call-interactively #'jiralib-login))
+      (jiralib-update-issue
+       issue-id (list (cons field value))
+       (lambda (&rest result)
+         ;; jiralib uses Request's :complete callback, also called on errors.
+         (let* ((response (plist-get result :response))
+                (status (and response (request-response-status-code response))))
+           (if (or (plist-get result :error-thrown)
+                   (eq (plist-get result :symbol-status) 'error)
+                   (and status (or (< status 200) (>= status 300))))
+               (message "Issue '%s' %s update failed" issue-id property)
+             (when (buffer-live-p buffer)
+               (with-current-buffer buffer
+                 (save-excursion
+                   (save-restriction
+                     (widen)
+                     (let ((position (org-find-entry-with-id issue-id)))
+                       (when position
+                         (goto-char position)
+                         (let ((org-jira-property-overrides overrides))
+                           (org-jira-entry-put nil property display-value))))))))
+             (message "Issue '%s' %s updated!" issue-id property))))))))
 
 (defvar org-jira-project-read-history nil)
 (defvar org-jira-boards-read-history nil)
@@ -2669,7 +2703,7 @@ otherwise it should return:
                     (or (org-jira-build-components-list
                          project-components
                          org-issue-components) []))
-                   (cons 'labels (split-string org-issue-labels ",\\s *"))
+                   (cons 'labels (or (split-string org-issue-labels ",\\s *" t) []))
                    (cons 'priority (org-jira-get-id-name-alist org-issue-priority
                                                        (jiralib-get-priorities)))
                    (cons 'description org-issue-description)
