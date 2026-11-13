@@ -150,6 +150,10 @@ visiting one of the files (they're named after your Jira project code,
 for example, 'EX.org' for a project named 'EX').
 Use these commands from an issue heading or any of its child headings:
 
+- `M-x org-jira-update-issue` (`C-c iu`): send the heading's title and other
+  issue fields to Jira, then refresh the entry in place in the current buffer,
+  preserving its heading level and local notes.
+
 - `M-x org-jira-refresh-issue` (`C-c ir`): refresh the linked issue from Jira
   in place in the current buffer, preserving its heading level and local notes.
 

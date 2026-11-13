@@ -1938,7 +1938,7 @@ apply the response there even if the user switches buffers."
 
 ;;;###autoload
 (defun org-jira-update-issue ()
-  "Update an issue."
+  "Send the enclosing issue's Org fields to Jira, then refresh it in place."
   (interactive)
   (let ((issue-id (org-jira-parse-issue-id))
         (filename (org-jira-parse-issue-filename)))
@@ -2640,7 +2640,9 @@ otherwise it should return:
   "Update the details of issue ISSUE-ID in FILENAME.  REST will contain optional input."
   (ensure-on-issue-id-with-filename issue-id filename
     ;; Set up a bunch of values from the org content
-    (let* ((org-issue-components (org-jira-get-issue-val-from-org 'components))
+    (let* ((source-buffer (current-buffer))
+           (overrides org-jira-property-overrides)
+           (org-issue-components (org-jira-get-issue-val-from-org 'components))
            (org-issue-labels (org-jira-get-issue-val-from-org 'labels))
            (org-issue-description (org-trim (org-jira-get-issue-val-from-org 'description)))
            (org-issue-priority (org-jira-get-issue-val-from-org 'priority))
@@ -2688,20 +2690,30 @@ otherwise it should return:
                 (append update-fields
                         (list (cons 'duedate (org-jira-get-issue-val-from-org 'deadline))))))
 
-        ;; TODO: We need some way to handle things like assignee setting
-        ;; and refreshing the proper issue in the proper buffer/filename.
+        ;; jiralib-call drops callbacks when it has to log in first.
+        (unless jiralib-token
+          (call-interactively #'jiralib-login))
         (jiralib-update-issue
          issue-id
          update-fields
-         ;; This callback occurs on success
-         (org-jira-with-callback
-           (message (format "Issue '%s' updated!" issue-id))
-           (jiralib-get-issue
-            issue-id
-            (org-jira-with-callback
-              (org-jira-log "Update get issue for refresh callback hit.")
-              (-> cb-data list org-jira-get-issues))))
-         ))
+         (lambda (&rest result)
+           ;; Request's :complete callback also runs on failed updates.
+           (let* ((response (plist-get result :response))
+                  (status (and response (request-response-status-code response))))
+             (if (or (plist-get result :error-thrown)
+                     (eq (plist-get result :symbol-status) 'error)
+                     (and status (or (< status 200) (>= status 300))))
+                 (message "Issue '%s' update failed" issue-id)
+               (message "Issue '%s' updated!" issue-id)
+               (when (buffer-live-p source-buffer)
+                 (with-current-buffer source-buffer
+                   (org-jira-freeze-ui
+                     (let ((position (org-find-entry-with-id issue-id))
+                           (org-jira-property-overrides overrides))
+                       ;; Do not reinsert an issue deleted while updating.
+                       (when position
+                         (goto-char position)
+                         (org-jira-refresh-issue)))))))))))
       )))
 
 
