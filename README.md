@@ -179,8 +179,13 @@ Some of the important keybindings:
 
 #### Get Issues from Custom JQL
 
-You can define one or more custom JQL queries to run and have your
-results inserted into, as such:
+Run `org-jira-get-issues-from-custom-jql` (`C-c ij`) in an Org buffer
+to insert query results as top-level headings at point, like
+`org-jira-get-issue-here`. All configured queries insert into the same
+buffer in order, without a project headline or a separate results file.
+Legacy `:filename` entries are accepted but do not select the destination.
+
+You can define one or more custom JQL queries as follows:
 
 ```
 (setq org-jira-custom-jqls
@@ -200,15 +205,6 @@ order by priority, created DESC "
           :filename "ex-ahu-priority-items")
     ))
 ```
-
-Please note this feature still requires some testing - things that may
-work in the existing proj-key named buffers (EX.org etc.) may behave
-unexpectedly in the custom named buffers.
-
-One thing you may notice is if you create an issue in this type of
-buffer, the auto-refresh of the issue will appear in the PROJ-KEY.org
-specific buffer (you will then need to refresh this JQL buffer by
-re-running the command `C-c ij`).
 
 #### Streamlined transition flow
 

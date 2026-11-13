@@ -282,6 +282,56 @@ CLOCK:")))
                    (regexp-quote "** TODO [[https://example.atlassian.net/browse/AHU-39][Rendered story title]]")
                    (buffer-string))))))
 
+(ert-deftest org-jira-custom-jql-renders-in-source-buffer-at-top-level-test ()
+  (let ((jiralib-url "https://example.atlassian.net")
+        (org-jira-deadline-duedate-sync-p nil)
+        (org-jira-proj-key-override nil)
+        (org-jira-custom-jqls
+         '((:jql "first\nquery" :limit 2 :filename "first-results")
+           (:jql "second query" :limit 1 :filename "second-results")))
+        pending-callback)
+    (with-temp-buffer
+      (org-mode)
+      (insert "* Before\n\n* After\n")
+      (goto-char (point-min))
+      (search-forward "\n\n")
+      (cl-letf (((symbol-function 'jiralib-do-jql-search)
+                 (lambda (_jql _limit callback)
+                   (setq pending-callback callback)))
+                ((symbol-function 'org-jira--get-project-buffer)
+                 (lambda (&rest _args) (ert-fail "Opened a project buffer"))))
+        (org-jira-get-issues-from-custom-jql)
+        ;; A response can arrive after the user moves point or switches buffers.
+        (goto-char (point-max))
+        (with-temp-buffer
+          (funcall pending-callback
+                   :data `((issues . ,(vector (org-jira-t--issue-data)
+                                             (let ((issue (copy-tree (org-jira-t--issue-data))))
+                                               (setcdr (assq 'key issue) "AHU-40")
+                                               issue))))))
+        (with-temp-buffer
+          (funcall pending-callback
+                   :data `((issues . ,(vector
+                                      (let ((issue (copy-tree (org-jira-t--issue-data))))
+                                        (setcdr (assq 'key issue) "AHU-41")
+                                        issue)))))))
+      (goto-char (point-min))
+      (let ((headings (org-map-entries
+                       (lambda () (list (org-outline-level)
+                                        (org-entry-get nil "ID"))))))
+        (should (equal headings '((1 nil) (1 "AHU-39") (2 nil)
+                                 (1 "AHU-40") (2 nil)
+                                 (1 "AHU-41") (2 nil) (1 nil)))))
+      (should (string-prefix-p "* Before\n\n* TODO" (buffer-string)))
+      (should (string-suffix-p "* After\n" (buffer-string)))
+      (should-not org-jira-proj-key-override))))
+
+(ert-deftest org-jira-custom-jql-requires-org-buffer-test ()
+  (with-temp-buffer
+    (cl-letf (((symbol-function 'jiralib-do-jql-search)
+               (lambda (&rest _args) (ert-fail "Requested issues outside Org"))))
+      (should-error (org-jira-get-issues-from-custom-jql) :type 'user-error))))
+
 (ert-deftest org-jira-add-comment-to-get-issue-here-issue-test ()
   (let ((jiralib-url "https://example.atlassian.net")
         (org-jira-working-dir (make-temp-file "org-jira-test" t))

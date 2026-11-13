@@ -312,7 +312,6 @@ See `org-default-priority' for more info."
   :group 'org-jira
   :type 'integer)
 
-;; FIXME: Issue with using this - issues are grouped under a headline incorrectly.
 (defcustom org-jira-custom-jqls
   '(
     (:jql " assignee = currentUser() and createdDate < '2019-01-01' order by created DESC "
@@ -322,7 +321,9 @@ See `org-default-priority' for more info."
           :limit 100
           :filename "this-years-work")
     )
-  "A list of plists with :jql and :filename keys to run arbitrary user JQL."
+  "A list of plists with :jql, :limit and optional :filename keys.
+Results are inserted as top-level headings in the current Org buffer.
+The legacy :filename key does not select the destination file."
   :group 'org-jira
   :type '(alist :value-type plist))
 
@@ -1174,41 +1175,41 @@ See`org-jira-get-issue-list'"
 (defvar org-jira-original-default-jql nil)
 
 (defun org-jira-get-issues-from-custom-jql-callback (filename list)
-  "Generate a function that we can iterate over FILENAME and LIST with when callback finishes."
-  (cl-function
-   (lambda (&key data &allow-other-keys)
-     "Callback for async, DATA is the response from the request call.
-
-Will send a list of org-jira-sdk-issue objects to the list printer."
-     (org-jira-log "Received data for org-jira-get-issues-from-custom-jql-callback.")
-     (--> data
-          (org-jira-sdk-path it '(issues))
-          (append it nil)     ; convert the conses into a proper list.
-          (org-jira-sdk-create-issues-from-data-list-with-filename filename it)
-          org-jira-get-issues)
-     (setq org-jira-proj-key-override nil)
-     (let ((next (cdr list)))
-       (when next
-         (org-jira-get-issues-from-custom-jql next))))))
+  "Make a callback for FILENAME and LIST, retaining the insertion point."
+  (let ((insertion-point (copy-marker (point) t)))
+    (cl-function
+     (lambda (&key data &allow-other-keys)
+       (unwind-protect
+           (progn
+             (unless (marker-buffer insertion-point)
+               (user-error "The Org buffer for custom JQL results was closed"))
+             (with-current-buffer (marker-buffer insertion-point)
+               (save-excursion
+                 (save-restriction
+                   (widen)
+                   (dolist (issue (org-jira-sdk-create-issues-from-data-list-with-filename
+                                  filename
+                                  (append (org-jira-sdk-path data '(issues)) nil)))
+                     (goto-char insertion-point)
+                     (org-jira--render-issue-here issue))
+                   (goto-char insertion-point)
+                   (when (cdr list)
+                     (org-jira-get-issues-from-custom-jql (cdr list)))))))
+         (set-marker insertion-point nil))))))
 
 ;;;###autoload
 (defun org-jira-get-issues-from-custom-jql (&optional jql-list)
-  "Get JQL-LIST list of issues from a custom JQL and PROJ-KEY.
-
-The PROJ-KEY will act as the file name, while the JQL will be any
-valid JQL to populate a file to store PROJ-KEY results in.
-
-Please note that this is *not* concurrent or race condition
-proof.  If you try to run multiple calls to this function, it
-will mangle things badly, as they rely on globals DEFAULT-JQL and
-ORG-JIRA-PROJ-KEY-OVERRIDE being set before and after running."
+  "Insert results from JQL-LIST as top-level headings at point.
+Use `org-jira-custom-jqls' when JQL-LIST is nil.  All queries insert
+into the current Org buffer, like `org-jira-get-issue-here'."
   (interactive)
+  (unless (derived-mode-p 'org-mode)
+    (user-error "org-jira-get-issues-from-custom-jql must be run in an Org buffer"))
   (let* ((jl (or jql-list org-jira-custom-jqls))
          (uno (car jl))
          (filename (cl-getf uno :filename))
          (limit (cl-getf uno :limit))
          (jql (replace-regexp-in-string "[\n]" " " (cl-getf uno :jql))))
-    (setq org-jira-proj-key-override filename)
     (jiralib-do-jql-search jql limit (org-jira-get-issues-from-custom-jql-callback filename jl))))
 
 (defun org-jira--get-project-buffer (Issue)
