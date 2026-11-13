@@ -1908,6 +1908,40 @@ segments from the existing logbook."
         (org-jira-update-issue-details issue-id filename)
       (error "Not on an issue"))))
 
+(defun org-jira--org-tables-to-jira (description)
+  "Convert Org tables in DESCRIPTION to Jira wiki table markup."
+  (require 'org-element)
+  (require 'org-table)
+  (with-temp-buffer
+    (insert description)
+    (delay-mode-hooks (org-mode))
+    ;; Work backwards so replacing a table preserves earlier positions.
+    (dolist (table (reverse (org-element-map (org-element-parse-buffer)
+                               'table #'identity)))
+      (when (eq (org-element-property :type table) 'org)
+        (goto-char (or (org-element-property :post-affiliated table)
+                       (org-element-property :begin table)))
+        ;; A doubled pipe marks a table already written in Jira markup.
+        (unless (looking-at "[ \t]*||")
+          (let* ((start (point))
+                 (end (org-table-end))
+                 (newline (eq (char-before end) ?\n))
+                 (rows (org-table-to-lisp))
+                 (header (eq (cadr rows) 'hline))
+                 (markup
+                  (mapconcat
+                   (lambda (row)
+                     (let* ((separator (if header "||" "|"))
+                            (line (concat separator
+                                          (mapconcat #'identity row separator)
+                                          separator)))
+                       (setq header nil)
+                       line))
+                   (cl-remove 'hline rows) "\n")))
+            (delete-region start end)
+            (insert markup (if newline "\n" ""))))))
+    (buffer-string)))
+
 ;;;###autoload
 (defun org-jira-todo-to-jira ()
   "Convert an ordinary todo item to a jira ticket."

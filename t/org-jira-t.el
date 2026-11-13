@@ -643,6 +643,26 @@ CLOCK: [2026-06-23 Tue 14:04]--[2026-06-23 Tue 14:42] =>  0:38
     (should-error (org-jira--user-reference "AHU" "Unknown user")
                   :type 'user-error)))
 
+(ert-deftest org-jira-org-tables-to-jira-test ()
+  (dolist (case
+           '(("Before\n\n| Release | Changes |\n|---------+---------|\n| 26.5.3 | Fixes |\n\nAfter\n"
+              "Before\n\n||Release||Changes||\n|26.5.3|Fixes|\n\nAfter\n")
+             ("| One | Two |\n| Three | Four |\n"
+              "|One|Two|\n|Three|Four|\n")
+             ("| A | B |\n|---+---|\n| 1 | 2 |"
+              "||A||B||\n|1|2|")
+             ("  | A | B |\n  |---+---|\n  | 1 | 2 |\n"
+              "||A||B||\n|1|2|\n")
+             ("| A | B |\n|---+---|\n| 1 | 2 |\n\n| C | D |\n|---+---|\n| 3 | 4 |\n"
+              "||A||B||\n|1|2|\n\n||C||D||\n|3|4|\n")
+             ("#+begin_src text\n| A | B |\n|---+---|\n#+end_src\n"
+              "#+begin_src text\n| A | B |\n|---+---|\n#+end_src\n")
+             ("||Release||Changes||\n|26.5.3|Fixes|\n"
+              "||Release||Changes||\n|26.5.3|Fixes|\n")
+             ("Here’s a release — with no table.\n"
+              "Here’s a release — with no table.\n")))
+    (should (equal (org-jira--org-tables-to-jira (car case)) (cadr case)))))
+
 (ert-deftest org-jira-create-issue-prompts-for-components-test ()
   (let ((jiralib-users-cache '(((displayName . "Ranko") (name . "ranko"))))
         (org-jira-users nil)
