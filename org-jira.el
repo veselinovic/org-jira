@@ -1247,6 +1247,20 @@ into the current Org buffer, like `org-jira-get-issue-here'."
   (prog1 (point)
     (insert (make-string heading-level ?*) " ")))
 
+(defun org-jira--find-child-headings (prefix)
+  "Return child heading positions starting with PREFIX in the current subtree.
+Honor narrowing and allow trailing text, such as an issue link."
+  (save-excursion
+    (goto-char (point-min))
+    (let ((level (1+ (org-outline-level)))
+          (regexp (concat "\\`" (regexp-quote prefix) "\\(?:[ \t]\\|$\\)"))
+          positions)
+      (while (re-search-forward org-heading-regexp nil t)
+        (when (and (= (org-outline-level) level)
+                   (string-match-p regexp (org-get-heading t t t t)))
+          (push (line-beginning-position) positions)))
+      (nreverse positions))))
+
 (defun org-jira--render-issue-in-current-buffer (Issue heading-level &optional update-existing)
   "Render ISSUE in the current buffer as a HEADING-LEVEL heading.
 
@@ -1313,8 +1327,14 @@ matching ISSUE's ID instead of inserting at point."
          (lambda (heading-entry)
            (let* ((entry-heading
                    (concat (symbol-name heading-entry)
-                           ":")))
-             (setq p (org-find-exact-headline-in-buffer entry-heading))
+                           ":"))
+                  (positions (org-jira--find-child-headings entry-heading)))
+             ;; Repair duplicates from earlier refreshes, within this issue only.
+             (dolist (duplicate (reverse (cdr positions)))
+               (goto-char duplicate)
+               (delete-region duplicate
+                              (save-excursion (org-end-of-subtree t t) (point))))
+             (setq p (car positions))
              (if (and p (>= p (point-min))
                       (<= p (point-max)))
                  (progn
@@ -1679,33 +1699,39 @@ Expects input in format such as: [2017-04-05 Wed 01:00]--[2017-04-05 Wed 01:46] 
        (cl-remove-if #'org-jira-isa-ignored-comment?)))
 
 (defun org-jira--render-comment (Issue Comment &optional target-buffer)
-  (let ((render-buffer (if (and target-buffer (buffer-live-p target-buffer))
-                           target-buffer
-                         (current-buffer))))
-    (with-current-buffer render-buffer
+  (when (or (not target-buffer)
+            (org-jira--buffer-has-issue-p target-buffer (oref Issue issue-id)))
+    (with-current-buffer (or target-buffer (current-buffer))
       (with-slots (issue-id) Issue
         (with-slots (comment-id author headline created updated body) Comment
           (org-jira-log (format "Rendering a comment: %s" body))
           (ensure-on-issue-Issue Issue
-            (setq p (org-find-entry-with-id comment-id))
-            (when (and p (>= p (point-min))
-                       (<= p (point-max)))
-              (goto-char p)
+            (let* ((heading-prefix (make-string (1+ (org-outline-level)) ?*))
+                   (positions (org-map-entries (lambda () (point))
+                                               (concat "ID=\"" comment-id "\"")))
+                   (position (car positions)))
+              (dolist (duplicate (reverse (cdr positions)))
+                (goto-char duplicate)
+                (delete-region duplicate
+                               (save-excursion (org-end-of-subtree t t) (point))))
+              (when (and position (>= position (point-min))
+                         (<= position (point-max)))
+                (goto-char position)
+                (org-narrow-to-subtree)
+                (delete-region (point-min) (point-max)))
+              (goto-char (point-max))
+              (unless (looking-at "^")
+                (insert "\n"))
+              (insert heading-prefix " ")
+              (org-jira-insert headline "\n")
               (org-narrow-to-subtree)
-              (delete-region (point-min) (point-max)))
-            (goto-char (point-max))
-            (unless (looking-at "^")
-              (insert "\n"))
-            (insert "*** ")
-            (org-jira-insert headline "\n")
-            (org-narrow-to-subtree)
-            (org-jira-entry-put (point) "ID" comment-id)
-            (org-jira-entry-put (point) "created" created)
-            (unless (string= created updated)
-              (org-jira-entry-put (point) "updated" updated))
-            (goto-char (point-max))
-            ;;  Insert 2 spaces of indentation so Jira markup won't cause org-markup
-            (org-jira-insert (replace-regexp-in-string "^" "  " (or body "")))))))))
+              (org-jira-entry-put (point) "ID" comment-id)
+              (org-jira-entry-put (point) "created" created)
+              (unless (string= created updated)
+                (org-jira-entry-put (point) "updated" updated))
+              (goto-char (point-max))
+              ;; Indent Jira markup so it does not become Org headings.
+              (org-jira-insert (replace-regexp-in-string "^" "  " (or body ""))))))))))
 
 (defun org-jira-update-comments-for-issue (Issue &optional target-buffer)
   "Update the comments for the specified ISSUE issue."
@@ -1831,24 +1857,34 @@ purpose of wiping an old subtree."
         (filename (org-jira-filename)))
     (org-jira-update-worklogs-for-issue issue-id filename)))
 
-(defun org-jira-update-worklogs-for-issue (issue-id filename &optional preserve-open-clocks)
+(defun org-jira-update-worklogs-for-issue (issue-id filename &optional preserve-open-clocks target-buffer)
   "Update the worklogs for the current ISSUE-ID located in FILENAME.
 When PRESERVE-OPEN-CLOCKS is non-nil, keep open clock
-segments from the existing logbook."
+segments from the existing logbook.  When TARGET-BUFFER is non-nil,
+apply the response there even if the user switches buffers."
   (org-jira-log (format "org-jira-update-worklogs-for-issue id: %s filename: %s"
-                issue-id filename))
-  ;; Run the call
-  (jiralib-get-worklogs
-   issue-id
-   (org-jira-with-callback
-     (ensure-on-issue-id-with-filename issue-id filename
-       (let ((worklogs (org-jira-find-value cb-data 'worklogs)))
-         (org-jira-log (format "org-jira-update-worklogs-for-issue cb id: %s fn: %s"
                        issue-id filename))
-         (org-jira-logbook-reset issue-id filename
-          (org-jira-sort-org-clocks (org-jira-worklogs-to-org-clocks
-                                     (jiralib-worklog-import--filter-apply worklogs)))
-          preserve-open-clocks))))))
+  (let ((callback
+         (org-jira-with-callback
+           (ensure-on-issue-id-with-filename issue-id filename
+             (let ((worklogs (org-jira-find-value cb-data 'worklogs)))
+               (org-jira-log (format "org-jira-update-worklogs-for-issue cb id: %s fn: %s"
+                                     issue-id filename))
+               (org-jira-logbook-reset issue-id filename
+                (org-jira-sort-org-clocks (org-jira-worklogs-to-org-clocks
+                                           (jiralib-worklog-import--filter-apply worklogs)))
+                preserve-open-clocks))))))
+    (jiralib-get-worklogs
+     issue-id
+     (lambda (&rest result)
+       (if target-buffer
+           (when (and (org-jira--buffer-has-issue-p target-buffer issue-id)
+                      (plist-get result :data)
+                      (not (plist-get result :error-thrown))
+                      (not (eq (plist-get result :symbol-status) 'error)))
+             (with-current-buffer target-buffer
+               (apply callback result)))
+         (apply callback result))))))
 
 ;;;###autoload
 (defun org-jira-unassign-issue ()
@@ -2385,10 +2421,38 @@ Where issue-id will be something such as \"EX-22\"."
 
 ;;;###autoload
 (defun org-jira-refresh-issue ()
-  "Refresh current issue from jira to org."
+  "Refresh the enclosing issue from Jira in its current buffer."
   (interactive)
   (ensure-on-issue
-    (org-jira--refresh-issue (org-jira-id) (org-jira-filename))))
+    (let ((issue-id (org-jira-id))
+          (filename (org-jira-filename))
+          (source-buffer (current-buffer))
+          (overrides org-jira-property-overrides))
+      ;; Keep the callback even when this request requires an initial login.
+      (unless jiralib-token
+        (call-interactively #'jiralib-login))
+      (jiralib-get-issue
+       issue-id
+       (lambda (&rest result)
+         (let ((data (plist-get result :data)))
+           (when (and data
+                      (not (plist-get result :error-thrown))
+                      (not (eq (plist-get result :symbol-status) 'error))
+                      (buffer-live-p source-buffer))
+             (with-current-buffer source-buffer
+               (org-jira-freeze-ui
+                 (let ((position (org-find-entry-with-id issue-id))
+                       (org-jira-property-overrides overrides))
+                   ;; Do not reinsert an issue deleted while the request ran.
+                   (when position
+                     (goto-char position)
+                     (let ((Issue (car (org-jira-sdk-create-issues-from-data-list-with-filename
+                                        filename (list data)))))
+                       (org-jira--render-issue-in-current-buffer Issue (org-outline-level) t)
+                       (when org-jira-download-comments
+                         (org-jira-update-comments-for-issue Issue source-buffer))
+                       (when org-jira-worklog-sync-p
+                         (org-jira-update-worklogs-for-issue issue-id filename nil source-buffer))))))))))))))
 
 (defun org-jira--refresh-issue (issue-id &optional filename)
   "Refresh issue from jira to org using ISSUE-ID."

@@ -148,6 +148,12 @@ it pulls in all issues that are assigned to you.
 Following that, you can try out some of the org-jira mode commands by
 visiting one of the files (they're named after your Jira project code,
 for example, 'EX.org' for a project named 'EX').
+Use these commands from an issue heading or any of its child headings:
+
+- `M-x org-jira-refresh-issue` (`C-c ir`): refresh the linked issue from Jira
+  in place in the current buffer, preserving its heading level and local notes.
+
+
 ### Keybinds
 Some of the important keybindings:
 
