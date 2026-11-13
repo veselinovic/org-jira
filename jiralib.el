@@ -368,6 +368,24 @@ request.el, so if at all possible, it should be avoided."
       (getIssueTypesByProject
        (let ((response (jiralib--rest-call-it (format "/rest/api/2/project/%s" (car params)))))
          (cl-coerce (cdr (assoc 'issueTypes response)) 'list)))
+      (getCreateFields
+       (let ((start-at 0) fields more)
+         (while
+             (progn
+               (let* ((page (jiralib--rest-call-it
+                             (format "/rest/api/2/issue/createmeta/%s/issuetypes/%s"
+                                     (url-hexify-string (car params))
+                                     (url-hexify-string (cadr params)))
+                             :params `((startAt . ,start-at) (maxResults . 50))))
+                      (values (alist-get 'values page)))
+                 (setq fields (append fields (append values nil))
+                       more (not (eq (alist-get 'last page) t)))
+                 (when more
+                   (unless (> (length values) 0)
+                     (error "Invalid Jira create-field pagination: %S" page))
+                   (setq start-at (+ start-at (length values)))))
+               more))
+         fields))
       (getUser (jiralib--rest-call-it
                 "/rest/api/2/user"
                 :params `((,(if (eq (jiralib--user-identifier-field) 'name)

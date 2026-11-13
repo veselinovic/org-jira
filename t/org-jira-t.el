@@ -685,5 +685,19 @@ CLOCK: [2026-06-23 Tue 14:04]--[2026-06-23 Tue 14:42] =>  0:38
                              [((id . "10")) ((id . "20"))])))
             (should-not answers)))))))
 
+(ert-deftest org-jira-create-field-required-and-optional-test ()
+  (dolist (type '("option" "array" "string"))
+    (dolist (required '(t :json-false))
+      (let ((field `((name . "Company") (required . ,required)
+                     (schema (type . ,type))
+                     ,@(unless (equal type "string")
+                         '((allowedValues . [((id . "20") (value . "MGB"))]))))))
+        (cl-letf (((symbol-function 'completing-read) (lambda (&rest _args) ""))
+                  ((symbol-function 'completing-read-multiple) (lambda (&rest _args) nil))
+                  ((symbol-function 'read-string) (lambda (&rest _args) "  ")))
+          (if (eq required t)
+              (should-error (org-jira--read-create-field field) :type 'user-error)
+            (should-not (org-jira--read-create-field field))))))))
+
 (provide 'org-jira-t)
 ;;; org-jira-t.el ends here

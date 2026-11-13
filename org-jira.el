@@ -2076,8 +2076,42 @@ segments from the existing logbook."
    'org-jira-type-read-history
    (car org-jira-type-read-history)))
 
-(defun org-jira-get-issue-struct (project type summary description &optional parent-id)
-  "Create an issue struct for PROJECT, of TYPE, with SUMMARY and DESCRIPTION."
+(defun org-jira--read-create-field (field)
+  "Prompt for FIELD using Jira creation metadata and return its API value."
+  (let* ((name (alist-get 'name field))
+         (schema (alist-get 'schema field))
+         (type (alist-get 'type schema))
+         (required (eq (alist-get 'required field) t))
+         (prompt (concat name ": "))
+         (options
+          (mapcar (lambda (option)
+                    (if (stringp option)
+                        (cons option option)
+                      (cons (or (alist-get 'value option) (alist-get 'name option))
+                            (if (alist-get 'id option)
+                                `((id . ,(alist-get 'id option)))
+                              `((value . ,(alist-get 'value option)))))))
+                  (append (alist-get 'allowedValues field) nil)))
+         (value
+          (cond
+           ((and options (equal type "array"))
+            (let ((selected (completing-read-multiple prompt options nil t)))
+              (when selected
+                (vconcat (mapcar (lambda (label) (cdr (assoc label options))) selected)))))
+           (options
+            (cdr (assoc (completing-read prompt options nil t) options)))
+           ((equal type "string")
+            (let ((text (read-string prompt)))
+              (unless (equal (org-trim text) "") text)))
+           (t (user-error "Unsupported Jira field type for %s: %s" name type)))))
+    (when (and required (not value))
+      (user-error "%s is required" name))
+    value))
+
+(defun org-jira-get-issue-struct (project type summary description &optional parent-id field-names)
+  "Create an issue struct for PROJECT, of TYPE, with SUMMARY and DESCRIPTION.
+PARENT-ID identifies the parent of a subtask.  FIELD-NAMES lists additional
+creation field names to prompt for when available for this project and type."
   (if (or (equal project "")
           (equal type "")
           (equal summary ""))
@@ -2109,6 +2143,19 @@ segments from the existing logbook."
              ;; The identifier should be nil when Unassigned.
              (assignee (,(jiralib--user-identifier-field)
                         . ,(or (cdr (assoc user jira-users)) nil)))))))
+    (when field-names
+      (let ((metadata (jiralib-call "getCreateFields" nil project
+                                   (alist-get 'id (alist-get 'issuetype
+                                                            (alist-get 'fields ticket-struct))))))
+        (dolist (name field-names)
+          (let ((field (cl-find name metadata :key (lambda (field) (alist-get 'name field))
+                                :test #'string-equal)))
+            (when field
+              (let ((value (org-jira--read-create-field field)))
+                (when value
+                  (setf (alist-get (intern (alist-get 'fieldId field))
+                                   (alist-get 'fields ticket-struct))
+                        value))))))))
     ticket-struct))
 
 ;;;###autoload
