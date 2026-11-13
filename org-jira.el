@@ -1323,7 +1323,7 @@ matching ISSUE's ID instead of inserting at point."
                    (forward-line 1)
                    (delete-region (point) (point-max)))
                (if (org-goto-first-child)
-                   (org-insert-heading)
+                   (org-jira--insert-issue-heading (org-outline-level))
                  (goto-char (point-max))
                  (open-line 1)
                  (org-insert-subheading t))
@@ -1333,7 +1333,8 @@ matching ISSUE's ID instead of inserting at point."
              (org-jira-insert
               (replace-regexp-in-string
                "^" "  "
-               (format "%s" (slot-value Issue heading-entry))))))
+               (format "%s" (slot-value Issue heading-entry))))
+             (unless (bolp) (insert "\n"))))
          '(description))))))
 
 (defun org-jira--render-issue-here (Issue)
@@ -1944,17 +1945,56 @@ segments from the existing logbook."
 
 ;;;###autoload
 (defun org-jira-todo-to-jira ()
-  "Convert an ordinary todo item to a jira ticket."
+  "Create a Jira ticket from the current TODO and update it in place."
   (interactive)
   (ensure-on-todo
    (when (org-jira-parse-issue-id)
      (error "Already on jira ticket"))
-   (save-excursion (org-jira-create-issue
-                    (org-jira-read-project)
-                    (org-jira-read-issue-type)
-                    (org-get-heading t t)
-                    (org-get-entry)))
-   (delete-region (point-min) (point-max))))
+   (let* ((description
+           (save-excursion
+             (goto-char (point-min))
+             (let ((description-heading
+                    (save-excursion
+                      (when (org-goto-first-child)
+                        (catch 'found
+                          (while t
+                            (when (equal (org-get-heading t t) "description:")
+                              (throw 'found (point)))
+                            (unless (org-get-next-sibling)
+                              (throw 'found nil))))))))
+               (if description-heading
+                   (progn
+                     (goto-char description-heading)
+                     (org-get-entry))
+                 ;; Ordinary TODOs use their body, without metadata or
+                 ;; child notes that will be preserved separately.
+                 (let ((end (org-entry-end-position)))
+                   (org-end-of-meta-data t)
+                   (buffer-substring-no-properties (point) end))))))
+          (project (org-jira-read-project))
+          (type (org-jira-read-issue-type project))
+          (ticket-struct
+           (org-jira-get-issue-struct
+            project type (org-link-display-format (org-get-heading t t))
+            (org-jira--org-tables-to-jira description)
+            nil '("Security Service" "Company")))
+          (issue (org-jira-sdk-create-issue-from-data
+                  (jiralib-create-issue ticket-struct))))
+     ;; Only edit the source after creation and hydration succeed.  Keep
+     ;; its heading level, local metadata, and children when rendering.
+     (goto-char (point-min))
+     (let ((level (org-outline-level))
+           (tags (org-get-tags nil t)))
+       (atomic-change-group
+         (save-excursion
+           (let ((entry-end (org-entry-end-position)))
+             (org-end-of-meta-data t)
+             (delete-region (point) entry-end)))
+         (org-entry-put nil "ID" (oref issue issue-id))
+         (org-jira-maybe-activate-mode)
+         (org-jira--render-issue-in-current-buffer issue level t)
+         (goto-char (point-min))
+         (org-set-tags-to (delete-dups (append tags (org-get-tags nil t)))))))))
 
 ;;;###autoload
 (defun org-jira-get-subtasks ()

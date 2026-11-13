@@ -129,6 +129,18 @@ or `auto` (the default) to detect the format from user records.
 
 ## Usage
 ### Getting Started
+Use `M-x org-jira-todo-to-jira` on an Org TODO heading to create a Jira
+ticket from it. Select the project, issue type, assignee, priority, labels,
+and components (choose `Done` to finish selecting components). Org tables
+in its description are converted to Jira wiki tables, including headers.
+The command also prompts for **Security Service** and **Company** when
+those fields are available on the selected project's issue creation screen.
+It discovers their field IDs and allowed choices from Jira. Multiple-choice
+fields accept comma-separated selections; optional fields can be left blank.
+After creation, the heading is updated in place with the Jira link and
+properties, preserving its level, local metadata, tags, and child notes.
+If creation fails, the original TODO stays intact.
+
 org-jira mode is easy to use, to get started (after installing this
 library) try running `M-x org-jira-get-issues`.  You should see that
 it pulls in all issues that are assigned to you.
