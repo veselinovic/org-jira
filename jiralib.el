@@ -472,7 +472,9 @@ request.el, so if at all possible, it should be avoided."
                      (format "/rest/api/2/issue/%s" (car params))
                      :type "PUT"
                      :data (json-encode `((fields . ,(cadr params))))))
-      (getLabels (jiralib--rest-call-it (format "/rest/api/2/label?startAt=%s" (car params)))))))
+      (getLabels (jiralib--rest-call-it
+                  (format "/rest/api/2/label?startAt=%s" (car params))
+                  :allowed-status-codes '(404))))))
 
 (defun jiralib--soap-call-it (&rest args)
   "Deprecated SOAP call endpoint.  Will be removed soon.
@@ -490,40 +492,50 @@ Pass ARGS to jiralib-call."
   "Invoke the corresponding jira rest method API.
 Invoking COMPLETE-CALLBACK when the
 JIRALIB-COMPLETE-CALLBACK is non-nil, request finishes, and
-passing ARGS to REQUEST."
+passing ARGS to REQUEST.
+The internal :allowed-status-codes option in ARGS treats listed HTTP
+errors as an unavailable optional endpoint and returns nil."
   (unless api (error "jiralib--rest-call-it was called with a NIL api value."))
-  (setq args
-        (mapcar
-         (lambda (arg)
-           (if (stringp arg)
-               (encode-coding-string arg jiralib-coding-system)
-             arg))
-         args))
-  (append (request-response-data
-           (apply #'request (if (string-match "^http[s]*://" api) api ;; If an absolute path, use it
-                              (concat (replace-regexp-in-string "/*$" "/" jiralib-url)
-                                      (replace-regexp-in-string "^/*" "" api)))
-                  :sync (not jiralib-complete-callback)
-                  :headers `(,jiralib-token ("Content-Type" . "application/json"))
-                  :parser 'jiralib--json-read
-                  :complete jiralib-complete-callback
-                  ;; Ensure we have useful errors
-                  :error
-                  (let
-                      ((my-api api)
-                       (my-args args))
-                    (cl-function
-                       (lambda (&key data &allow-other-keys)
-                         (print "JIRA_ERROR - see your *Messages* buffer for more details.")
-                         (print "JIRA_ERROR REQUEST: ")
-                         (print my-api)
-                         (print my-args)
-                         (print "JIRA_ERROR RESPONSE: ")
-                         (print data)
-                         (error "JIRA_ERROR - see your *Messages* buffer for more details.")
-                         )))
-                  args))
-          nil))
+  (let ((allowed-status-codes (plist-get args :allowed-status-codes)))
+    (cl-remf args :allowed-status-codes)
+    (setq args
+          (mapcar
+           (lambda (arg)
+             (if (stringp arg)
+                 (encode-coding-string arg jiralib-coding-system)
+               arg))
+           args))
+    (append (request-response-data
+             (apply #'request (if (string-match "^http[s]*://" api) api ;; If an absolute path, use it
+                                (concat (replace-regexp-in-string "/*$" "/" jiralib-url)
+                                        (replace-regexp-in-string "^/*" "" api)))
+                    :sync (not jiralib-complete-callback)
+                    :headers `(,jiralib-token ("Content-Type" . "application/json"))
+                    :parser 'jiralib--json-read
+                    :complete jiralib-complete-callback
+                    ;; Ensure we have useful errors
+                    :error
+                    (let
+                        ((my-api api)
+                         (my-args args))
+                      (cl-function
+                       (lambda (&key data response &allow-other-keys)
+                         (if (and response
+                                  (memq (request-response-status-code response)
+                                        allowed-status-codes))
+                             ;; An optional endpoint is unavailable.  Its error
+                             ;; body is not a successful API response.
+                             (setf (request-response-data response) nil)
+                           (print "JIRA_ERROR - see your *Messages* buffer for more details.")
+                           (print "JIRA_ERROR REQUEST: ")
+                           (print my-api)
+                           (print my-args)
+                           (print "JIRA_ERROR RESPONSE: ")
+                           (print data)
+                           (error "JIRA_ERROR - see your *Messages* buffer for more details.")
+                           ))))
+                    args))
+            nil)))
 
 (defun jiralib--call-it (method &rest params)
   "Invoke the JIRA METHOD with supplied PARAMS.
@@ -1184,17 +1196,22 @@ Auxiliary Notes:
 
 (defvar jiralib-labels-cache nil)
 (defun jiralib-get-labels ()
-  "Return assignable labels that can be added to an issue."
+  "Return assignable labels that can be added to an issue.
+Return nil when the server does not provide label suggestions."
   (unless jiralib-labels-cache
-    (setq jiralib-labels-start-at 0)
-    (while (progn
-             (let* ((labels (jiralib-call "getLabels" nil jiralib-labels-start-at))
+    (let ((start-at 0))
+      (while (let* ((labels (jiralib-call "getLabels" nil start-at))
                     (max-results (alist-get 'maxResults labels))
                     (is-last (alist-get 'isLast labels))
                     (values (alist-get 'values labels)))
-               (setq jiralib-labels-start-at (+ max-results jiralib-labels-start-at)
-                     jiralib-labels-cache (append values jiralib-labels-cache))
-               (not (eq is-last t)))))))
+               (when labels
+                 (setq jiralib-labels-cache (append values jiralib-labels-cache))
+                 (unless (eq is-last t)
+                   (unless (and (numberp max-results) (> max-results 0))
+                     (error "Invalid Jira label pagination: %S" labels))
+                   (setq start-at (+ max-results start-at))
+                   t))))))
+  jiralib-labels-cache)
 
 (defun jiralib--agile-not-last-entry (num-entries total start-at limit)
   "Return true if need to retrieve next page from agile api"
