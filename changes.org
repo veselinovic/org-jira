@@ -1,0 +1,308 @@
+* Changes On Current Branch (master)
+
+This file explains the current uncommitted changes on the =master= branch in a
+beginner-friendly way.
+
+At the time of writing, the relevant changed files are:
+
+- =org-jira.el=
+- =t/org-jira-t.el=
+
+The main goal of the change set is simple:
+
+- add a command named =org-jira-get-issue-here=
+- fetch one Jira issue by key or ID
+- insert that issue at the current position in the current Org buffer
+- render the inserted issue as a top-level =*= heading
+- keep the existing project-file issue rendering behavior intact
+- add tests so the new behavior does not quietly regress
+
+* Background
+
+This package already has commands that fetch Jira issues and write them into
+project-specific Org files under a project heading.
+
+For example, the existing rendering path writes issues like this:
+
+#+begin_src org
+* AHU-Tickets
+** TODO [[https://example.atlassian.net/browse/AHU-39][Rendered story title]]
+#+end_src
+
+That is useful when org-jira owns the project file layout.
+
+The new command solves a different workflow:
+
+- the user is already editing an Org buffer
+- the user wants to fetch one Jira issue
+- the issue should be inserted exactly where point is
+- the issue should be a top-level heading, like this:
+
+#+begin_src org
+* TODO [[https://example.atlassian.net/browse/AHU-39][Rendered story title]]
+#+end_src
+
+* What Changed
+
+** New Command: =org-jira-get-issue-here=
+
+The new interactive command is:
+
+#+begin_src emacs-lisp
+(org-jira-get-issue-here ID)
+#+end_src
+
+It does four things:
+
+1. reads an issue ID from the user
+2. fetches the issue with =jiralib-get-issue=
+3. converts the Jira response into an =org-jira-sdk-issue=
+4. renders that issue at the current buffer position as a level-1 heading
+
+In plain language, this is the command to use when you want the issue "right
+here" instead of in the normal project file.
+
+The command also tries to make the prompt convenient:
+
+- if point is on an existing Org entry with an issue-like =ID= property, that
+  value is offered as the default
+- if point is on text that looks like a Jira key, such as =AHU-39=, that key is
+  offered as the default
+
+The command must run in an Org buffer.  If it is run elsewhere, it raises a
+=user-error=.
+
+** New Helper: =org-jira--issue-id-at-point=
+
+This helper finds a Jira issue key near point.
+
+It checks two places:
+
+1. the current Org entry's =ID= property
+2. the Jira-looking key directly under point on the current line
+
+This makes interactive use smoother.  A user can put point on =AHU-39=, run
+=M-x org-jira-get-issue-here=, and get =AHU-39= as the initial prompt value.
+
+** Renderer Refactor
+
+Before this change, =org-jira--render-issue= contained all of the issue
+rendering logic and always rendered into the project file as a second-level
+heading.
+
+That was too specific for the new command, because =org-jira-get-issue-here=
+needs almost the same rendering logic, but with two differences:
+
+- use the current buffer
+- insert a level-1 heading
+
+To avoid duplicating the issue rendering code, the shared logic now lives in:
+
+#+begin_src emacs-lisp
+org-jira--render-issue-in-current-buffer
+#+end_src
+
+That helper accepts a heading level.
+
+The existing project-file renderer now calls it with heading level =2=:
+
+#+begin_src emacs-lisp
+(org-jira--render-issue-in-current-buffer Issue 2 t)
+#+end_src
+
+The new "here" renderer calls it with heading level =1=:
+
+#+begin_src emacs-lisp
+(org-jira--render-issue-in-current-buffer Issue 1)
+#+end_src
+
+This keeps one implementation for:
+
+- the issue heading
+- tags
+- properties
+- deadline handling
+- description rendering
+
+It also keeps the older behavior for normal issue sync:
+
+- issues still go into the project file
+- issues are still rendered under the project heading as =**=
+- existing project-file issues can still be updated in place
+
+** Point And Newline Handling
+
+The new command inserts at point, so the renderer now has to be careful about
+where the heading begins and ends.
+
+This matters for buffers like:
+
+#+begin_src org
+* Existing
+
+* Next
+#+end_src
+
+If point is on the blank line before =* Next=, the inserted issue must become
+its own heading.  It must not be joined onto the following heading.
+
+The renderer now records the start of the inserted heading before narrowing to
+the subtree.  That ensures tags and properties are applied to the newly inserted
+issue, not to the next heading in the buffer.
+
+* File-By-File Explanation
+
+** =org-jira.el=
+
+The user-facing change is the new command:
+
+#+begin_src emacs-lisp
+(defun org-jira-get-issue-here (id)
+  ...)
+#+end_src
+
+The support code added around it includes:
+
+- =org-jira--issue-id-at-point=
+- =org-jira--insert-issue-heading=
+- =org-jira--render-issue-in-current-buffer=
+- =org-jira--render-issue-here=
+
+The existing =org-jira--render-issue= function was changed to delegate the
+common rendering work to =org-jira--render-issue-in-current-buffer=.
+
+This means the old command path and the new command path share the same issue
+format instead of maintaining two separate renderers.
+
+** =t/org-jira-t.el=
+
+Two focused tests were added.
+
+*** Test 1: Issue Key Detection At Point
+
+Test name:
+
+- =org-jira-issue-id-at-point-test=
+
+This test creates a temporary Org buffer containing:
+
+#+begin_src org
+See AHU-39 for details
+#+end_src
+
+Then it puts point on the issue key and checks that:
+
+#+begin_src emacs-lisp
+(org-jira--issue-id-at-point)
+#+end_src
+
+returns:
+
+#+begin_src emacs-lisp
+"AHU-39"
+#+end_src
+
+*** Test 2: Render Issue Here As Top-Level Heading
+
+Test name:
+
+- =org-jira-get-issue-here-renders-level-one-at-point-test=
+
+This test stubs =jiralib-get-issue= so it does not make a real network call.
+Instead, it returns sample Jira issue data.
+
+Then it checks that =org-jira-get-issue-here=:
+
+- asks for the expected issue ID
+- inserts a =*= heading, not a =**= heading
+- places the issue at the current buffer position
+- writes the normal Jira issue link
+- writes the expected tag
+- writes the description as a child heading
+
+* Why These Changes Are Good
+
+** 1. Better Workflow Fit
+
+The existing sync commands are good for managed org-jira project files.
+
+The new command is better for ad hoc notes, planning files, meeting notes, and
+other Org buffers where the user wants to pull one issue into the current
+location.
+
+** 2. Less Duplication
+
+The rendering logic is shared between the old path and the new command.
+
+That reduces the chance that issue headings, properties, tags, or descriptions
+drift apart between the two workflows.
+
+** 3. Safer Insertion
+
+The renderer now tracks the inserted heading start before narrowing.
+
+That protects the case where point is directly before another heading, which is
+a common place to insert new top-level Org content.
+
+** 4. Test Coverage
+
+The tests cover the two important behaviors introduced here:
+
+- finding an issue key at point
+- inserting the fetched issue as a level-1 heading at point
+
+* Beginner Notes On The Elisp Used Here
+
+** =interactive=
+
+Marks a function as a command that can be run with =M-x=.
+
+In this change, =org-jira-get-issue-here= is interactive.
+
+** =read-string=
+
+Prompts the user for text.
+
+The new command uses it to ask for the issue ID.
+
+** =derived-mode-p=
+
+Checks whether the current buffer is using a mode derived from another mode.
+
+The new command uses it to make sure it is running in an Org buffer.
+
+** =save-restriction=
+
+Temporarily preserves the buffer's narrowing state.
+
+The renderer uses it because issue rendering narrows to the current subtree
+while adding properties and child headings.
+
+** =cl-letf=
+
+Temporarily replaces a function during a test.
+
+The new test uses it to replace =jiralib-get-issue= with a fake implementation,
+so the test can run without contacting Jira.
+
+* Verification
+
+The package test target was run:
+
+#+begin_src shell
+make test
+#+end_src
+
+Result:
+
+- 15 tests passed
+- 0 unexpected failures
+
+* Summary
+
+The current changes add =org-jira-get-issue-here= for inserting a fetched Jira
+issue at point as a top-level Org heading.
+
+The implementation reuses the existing issue rendering logic by factoring out a
+shared renderer, preserving the old project-file behavior while supporting the
+new current-buffer workflow.
