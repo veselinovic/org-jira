@@ -643,5 +643,27 @@ CLOCK: [2026-06-23 Tue 14:04]--[2026-06-23 Tue 14:42] =>  0:38
     (should-error (org-jira--user-reference "AHU" "Unknown user")
                   :type 'user-error)))
 
+(ert-deftest org-jira-create-issue-prompts-for-components-test ()
+  (let ((jiralib-users-cache '(((displayName . "Ranko") (name . "ranko"))))
+        (org-jira-users nil)
+        (jiralib-priority-codes-cache '(("1" . "Major")))
+        (jiralib-issue-types-by-project-cache '(("CDC" ("10007" . "Story")))))
+    (dolist (selection '(("Platform" "Backend" "Done") ("Done")))
+      (let ((answers (copy-sequence selection)))
+        (cl-letf (((symbol-function 'jiralib-get-components)
+                   (lambda (_project) '(("10" . "Platform") ("20" . "Backend"))))
+                  ((symbol-function 'completing-read)
+                   (lambda (prompt &rest _args)
+                     (cond ((equal prompt "Assignee: ") "Unassigned")
+                           ((equal prompt "Priority: ") "Major")
+                           (t (or (pop answers) (ert-fail "Unexpected extra prompt"))))))
+                  ((symbol-function 'org-jira-read-labels) (lambda () '("SOAR"))))
+          (let* ((issue (org-jira-get-issue-struct "CDC" "Story" "Upgrade" "Details"))
+                 (fields (alist-get 'fields issue)))
+            (should (equal (alist-get 'components fields)
+                           (if (equal selection '("Done")) []
+                             [((id . "10")) ((id . "20"))])))
+            (should-not answers)))))))
+
 (provide 'org-jira-t)
 ;;; org-jira-t.el ends here

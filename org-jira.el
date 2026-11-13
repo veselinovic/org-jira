@@ -1990,18 +1990,14 @@ segments from the existing logbook."
    'org-jira-components-read-history
    "Done"))
 
-;; TODO: Finish this feature - integrate into org-jira-create-issue
 (defun org-jira-read-components (project)
-  "Types: string PROJECT : string (csv of components).
-
-Get all the components for the PROJECT such as EX,
-that should be bound to an issue."
+  "Read a list of component names to assign to an issue in PROJECT."
   (let (components component)
     (while (not (equal "Done" component))
       (setq component (org-jira-read-component project))
       (unless (equal "Done" component)
         (push component components)))
-    components))
+    (nreverse components)))
 
 (defun org-jira-read-priority ()
   "Read priority name."
@@ -2057,6 +2053,7 @@ that should be bound to an issue."
          (user (completing-read "Assignee: " (mapcar 'car jira-users)))
          (priority (car (rassoc (org-jira-read-priority) (jiralib-get-priorities))))
          (labels (org-jira-read-labels))
+         (components (when project-components (org-jira-read-components project)))
          (ticket-struct
           `((fields
              (project (key . ,project))
@@ -2071,6 +2068,10 @@ that should be bound to an issue."
              (description . ,description)
              (priority (id . ,priority))
              (labels . ,labels)
+             (components . ,(vconcat
+                             (mapcar (lambda (name)
+                                       `((id . ,(car (rassoc name project-components)))))
+                                     components)))
              ;; The identifier should be nil when Unassigned.
              (assignee (,(jiralib--user-identifier-field)
                         . ,(or (cdr (assoc user jira-users)) nil)))))))
