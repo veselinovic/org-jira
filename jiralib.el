@@ -386,22 +386,16 @@ request.el, so if at all possible, it should be avoided."
                     (format "/rest/api/2/issue/%s/comment" (car params))
                     :type "POST"
                     :data (json-encode (cadr params))))
-      (createIssue
+      ((createIssue createIssueWithParent)
        ;; Creating the issue doesn't return it, a second call must be
        ;; made to pull it in by using the self key in response.
        (let ((response (jiralib--rest-call-it
                         "/rest/api/2/issue"
                         :type "POST"
                         :data (json-encode (car params)))))
-         (jiralib--rest-call-it (cdr (assoc 'self response)) :type "GET")
-         ))
-      (createIssueWithParent
-       (let ((response (jiralib--rest-call-it
-                        "/rest/api/2/issue"
-                        :type "POST"
-                        :data (json-encode (car params)))))
-         (jiralib--rest-call-it (cdr (assoc 'self response)) :type "GET")
-         ))
+         (unless (cdr (assoc 'self response))
+           (error "Jira issue creation failed: %S" response))
+         (jiralib--rest-call-it (cdr (assoc 'self response)) :type "GET")))
       (editComment (jiralib--rest-call-it
                      (format "/rest/api/2/issue/%s/comment/%s" (car params) (cadr params))
                      :data (json-encode `((body . ,(nth 2 params))))

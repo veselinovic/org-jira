@@ -148,5 +148,20 @@
         (should-error (jiralib--rest-call-it (car case)
                                            :allowed-status-codes (nth 2 case)))))))
 
+(ert-deftest jiralib-rejected-creation-does-not-fetch-issue-test ()
+  (let ((jiralib-token '("Authorization" . "test"))
+        (jiralib-issue-regexp "test-[0-9]+")
+        (jiralib-use-restapi t)
+        (requests nil))
+    (cl-letf (((symbol-function 'jiralib--rest-call-it)
+               (lambda (api &rest _args)
+                 (push api requests)
+                 '((errorMessages . [])
+                   (errors (assignee . "expected Object containing a name property"))))))
+      (dolist (method '("createIssue" "createIssueWithParent"))
+        (setq requests nil)
+        (should-error (jiralib-call method nil '((fields (summary . "Upgrade")))))
+        (should (equal requests '("/rest/api/2/issue")))))))
+
 (provide 'jiralib-t)
 ;;; jiralib-t.el ends here
