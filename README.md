@@ -115,6 +115,18 @@ machine your-site.atlassian.net login you@example.com password yourPassword port
 _Please note that in the authinfo file, port 443 should be specified
 if your jiralib-url is https._
 
+Issue creation and updates detect whether assignable users use Jira Cloud `accountId`
+or Jira Server/Data Center `name`. If your server requires usernames, you
+can explicitly select that format:
+
+```lisp
+(setq jiralib-user-identifier-field 'name)
+```
+
+Values in `org-jira-users` must then be Jira usernames (the API's `name`
+field), which may differ from email addresses. Use `accountId` for Cloud,
+or `auto` (the default) to detect the format from user records.
+
 ## Usage
 ### Getting Started
 org-jira mode is easy to use, to get started (after installing this

@@ -109,6 +109,14 @@
   "Use custom coding system for Jiralib."
   :group 'jiralib)
 
+(defcustom jiralib-user-identifier-field 'auto
+  "Field used to identify users when creating or updating issues.
+Jira Cloud uses `accountId'; Jira Server and Data Center use `name'.
+With `auto', infer the field from cached assignable user records.
+Configured `org-jira-users' identifiers must use the selected format."
+  :group 'jiralib
+  :type '(choice (const auto) (const accountId) (const name)))
+
 (defcustom jiralib-host ""
   "User customizable host name of the Jiralib server.
 
@@ -360,7 +368,11 @@ request.el, so if at all possible, it should be avoided."
       (getIssueTypesByProject
        (let ((response (jiralib--rest-call-it (format "/rest/api/2/project/%s" (car params)))))
          (cl-coerce (cdr (assoc 'issueTypes response)) 'list)))
-      (getUser (jiralib--rest-call-it "/rest/api/2/user" :params `((accountId . ,(car params)))))
+      (getUser (jiralib--rest-call-it
+                "/rest/api/2/user"
+                :params `((,(if (eq (jiralib--user-identifier-field) 'name)
+                                'username 'accountId)
+                           . ,(car params)))))
       (getVersions (jiralib--rest-call-it (format "/rest/api/2/project/%s/versions" (car params))))
 
       ;; Worklog calls
@@ -1109,6 +1121,16 @@ Return no more than MAX-NUM-RESULTS."
         (t (jiralib-call "getUser" nil account-id))))
 
 (defvar jiralib-users-cache nil "Cached list of users.")
+
+(defun jiralib--user-identifier-field ()
+  "Return the user identifier field for the configured Jira server."
+  (if (eq jiralib-user-identifier-field 'auto)
+      (if (and (cl-some (lambda (user) (alist-get 'name user)) jiralib-users-cache)
+               (not (cl-some (lambda (user) (alist-get 'accountId user))
+                             jiralib-users-cache)))
+          'name
+        'accountId)
+    jiralib-user-identifier-field))
 
 (defun jiralib-get-users (project-key)
   "Return assignable users information given the PROJECT-KEY."

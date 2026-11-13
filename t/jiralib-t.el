@@ -163,5 +163,23 @@
         (should-error (jiralib-call method nil '((fields (summary . "Upgrade")))))
         (should (equal requests '("/rest/api/2/issue")))))))
 
+(ert-deftest jiralib-user-lookup-identifier-format-test ()
+  (dolist (case '((name "ranko" username)
+                  (accountId "cloud-123" accountId)))
+    (let ((jiralib-url "https://example.com")
+          (jiralib-user-identifier-field (nth 0 case))
+          (jiralib-token '("Authorization" . "test"))
+          (jiralib-issue-regexp "test-[0-9]+")
+          (jiralib-use-restapi t))
+      (cl-letf (((symbol-function 'request)
+                 (lambda (url &rest settings)
+                   (should (equal url "https://example.com/rest/api/2/user"))
+                   (should (equal (plist-get settings :params)
+                                  (list (cons (nth 2 case) (nth 1 case)))))
+                   (make-request-response :status-code 200
+                                          :data '((displayName . "Ranko"))))))
+        (should (equal (jiralib-get-user (nth 1 case))
+                       '((displayName . "Ranko"))))))))
+
 (provide 'jiralib-t)
 ;;; jiralib-t.el ends here

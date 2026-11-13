@@ -679,25 +679,33 @@ it isn't already on."
 (defun org-jira-get-project-lead (proj)
   (org-jira-find-value proj 'lead 'name))
 
-;; This is mapped to accountId and not username, so we need nil not blank string.
 (defun org-jira-get-assignable-users (project-key)
   "Get the list of assignable users for PROJECT-KEY, adding user set jira-users first."
-  (append
-   '(("Unassigned" . nil))
-   org-jira-users
-   (mapcar (lambda (user)
-             (cons (org-jira-decode (cdr (assoc 'displayName user)))
-                   (org-jira-decode (cdr (assoc 'accountId user)))))
-           (jiralib-get-users project-key))))
+  (let* ((users (jiralib-get-users project-key))
+         (identifier-field (jiralib--user-identifier-field)))
+    (append
+     '(("Unassigned" . nil))
+     org-jira-users
+     (mapcar (lambda (user)
+               (cons (org-jira-decode (cdr (assoc 'displayName user)))
+                     (org-jira-decode (cdr (assoc identifier-field user)))))
+             users))))
 
 (defun org-jira-get-reporter-candidates (project-key)
   "Get the list of assignable users for PROJECT-KEY, adding user set jira-users first."
-  (append
-   org-jira-users
-   (mapcar (lambda (user)
-             (cons (org-jira-decode (cdr (assoc 'displayName user)))
-                   (org-jira-decode (cdr (assoc 'accountId user)))))
-           (jiralib-get-users project-key))))
+  (cdr (org-jira-get-assignable-users project-key)))
+
+(defun org-jira--user-reference (project user)
+  "Build a Jira user object for USER in PROJECT.
+USER may be a display name or identifier.  Nil and \"Unassigned\"
+produce an explicit null identifier.  Reject unknown users rather
+than accidentally clearing the assignment."
+  (let* ((users (org-jira-get-assignable-users project))
+         (identifier (or (cdr (assoc user users))
+                         (cdr (rassoc user users)))))
+    (when (and user (not (equal user "Unassigned")) (not identifier))
+      (user-error "No Jira user found for %s in %s" user project))
+    (list (cons (jiralib--user-identifier-field) identifier))))
 
 (defun org-jira-entry-put (pom property value)
   "Similar to org-jira-entry-put, but with an optional alist of overrides.
@@ -1866,7 +1874,7 @@ segments from the existing logbook."
                           (cdr (rassoc user jira-users)))))
           (when (null reporter)
             (error "No reporter found, this should probably never happen."))
-          (org-jira-update-issue-details issue-id filename :reporter (jiralib-get-user-account-id project reporter)))
+          (org-jira-update-issue-details issue-id filename :reporter reporter))
       (error "Not on an issue"))))
 
 ;;;###autoload
@@ -1887,7 +1895,7 @@ segments from the existing logbook."
                           (cdr (rassoc user jira-users)))))
           (when (null assignee)
             (error "No assignee found, use org-jira-unassign-issue to make the issue unassigned"))
-          (org-jira-update-issue-details issue-id filename :assignee (jiralib-get-user-account-id project assignee)))
+          (org-jira-update-issue-details issue-id filename :assignee assignee))
       (error "Not on an issue"))))
 
 ;;;###autoload
@@ -2063,8 +2071,9 @@ that should be bound to an issue."
              (description . ,description)
              (priority (id . ,priority))
              (labels . ,labels)
-             ;; accountId should be nil if Unassigned, not the key slot.
-             (assignee (accountId . ,(or (cdr (assoc user jira-users)) nil)))))))
+             ;; The identifier should be nil when Unassigned.
+             (assignee (,(jiralib--user-identifier-field)
+                        . ,(or (cdr (assoc user jira-users)) nil)))))))
     ticket-struct))
 
 ;;;###autoload
@@ -2119,7 +2128,7 @@ that should be bound to an issue."
       (cond ((eq my-key 'description)
              (org-goto-first-child)
              (forward-thing 'whitespace)
-             (if (looking-at "description: ")
+             (if (looking-at "description:\\(?:[ \t]\\|$\\)")
                  (org-trim (org-get-entry))
                (error "Can not find description field for this issue")))
 
@@ -2475,7 +2484,7 @@ otherwise it should return:
                    (cons 'priority (org-jira-get-id-name-alist org-issue-priority
                                                        (jiralib-get-priorities)))
                    (cons 'description org-issue-description)
-                   (cons 'assignee (list (cons 'id (jiralib-get-user-account-id project org-issue-assignee))))
+                   (cons 'assignee (org-jira--user-reference project org-issue-assignee))
                    (cons 'summary (org-jira-strip-priority-tags (org-jira-get-issue-val-from-org 'summary)))
                    (cons 'issuetype `((id . ,org-issue-type-id)
       (name . ,org-issue-type))))))
@@ -2483,7 +2492,7 @@ otherwise it should return:
         (if org-jira-update-issue-details-include-reporter
             (setq update-fields
                   (append update-fields
-                          (list (cons 'reporter (list (cons 'id (jiralib-get-user-account-id project org-issue-reporter))))))))
+                          (list (cons 'reporter (org-jira--user-reference project org-issue-reporter))))))
 
         ;; If we enable duedate sync and we have a deadline present
         (when (and org-jira-deadline-duedate-sync-p
