@@ -581,6 +581,8 @@ the standard project file."
     ;;(define-key org-jira-map (kbd "C-c if") 'org-jira-get-issues-from-filter-headonly)
     ;;(define-key org-jira-map (kbd "C-c iF") 'org-jira-get-issues-from-filter)
     (define-key org-jira-map (kbd "C-c il") 'org-jira-update-issue-labels)
+    (define-key org-jira-map (kbd "C-c iF") 'org-jira-update-issue-feature-link)
+    (define-key org-jira-map (kbd "C-c iS") 'org-jira-update-issue-sprint)
     (define-key org-jira-map (kbd "C-c iu") 'org-jira-update-issue)
     (define-key org-jira-map (kbd "C-c iw") 'org-jira-progress-issue)
     (define-key org-jira-map (kbd "C-c in") 'org-jira-progress-issue-next)
@@ -2083,6 +2085,34 @@ after Jira confirms success, even if the user has switched buffers."
                          (let ((org-jira-property-overrides overrides))
                            (org-jira-entry-put nil property display-value))))))))
              (message "Issue '%s' %s updated!" issue-id property))))))))
+
+;;;###autoload
+(defun org-jira-update-issue-feature-link ()
+  "Set the enclosing issue's feature link in Jira and Org.
+Enter a feature issue key, or leave the input blank to clear the link."
+  (interactive)
+  (ensure-on-issue
+    (let ((feature (org-trim
+                    (read-string "Feature issue key (blank to clear): "
+                                 (org-jira-get-issue-val-from-org 'feature-link)))))
+      (unless (or (string= feature "")
+                  (string-match-p (concat "\\`" (jiralib-get-issue-regexp) "\\'") feature))
+        (user-error "Enter a Jira issue key"))
+      (org-jira--update-issue-property
+       "feature-link" org-jira-feature-link-field
+       (unless (string= feature "") feature) feature))))
+
+;;;###autoload
+(defun org-jira-update-issue-sprint ()
+  "Choose a board and sprint for the enclosing issue in Jira and Org."
+  (interactive)
+  (ensure-on-issue
+    (let* ((board (org-jira-read-board))
+           (sprint (org-jira-read-sprint (cdr board))))
+      (unless (and sprint (integerp (cdr sprint)))
+        (user-error "Choose a sprint"))
+      (org-jira--update-issue-property
+       "sprint" org-jira-sprint-field (cdr sprint) (car sprint)))))
 
 (defvar org-jira-project-read-history nil)
 (defvar org-jira-boards-read-history nil)

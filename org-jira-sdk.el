@@ -41,6 +41,16 @@
 (require 'dash)
 (require 'cl-generic)
 
+(defcustom org-jira-feature-link-field 'customfield_11296
+  "Jira custom field used to read and update feature links."
+  :type 'symbol
+  :group 'org-jira)
+
+(defcustom org-jira-sprint-field 'customfield_11294
+  "Jira custom field used to read and update sprints."
+  :type 'symbol
+  :group 'org-jira)
+
 (defclass org-jira-sdk-record ()
   ((id :initarg :id :type string :required t)
    (data :initarg :data :documentation "The area to hold a big alist of data.")
@@ -151,7 +161,7 @@
      :assignee (path '(fields assignee displayName))
      :components (mapconcat (lambda (c) (org-jira-sdk-path c '(name))) (path '(fields components)) ", ")
      :labels (mapconcat (lambda (c) (format "%s" c)) (mapcar #'identity (path '(fields labels))) ", ")
-     :feature-link (path '(fields customfield_11296))
+     :feature-link (path (list 'fields org-jira-feature-link-field))
      :created (path '(fields created))     ; confirm
      :description (or (path '(fields description)) "")
      :duedate (or (path '(fields sprint endDate)) (path '(fields duedate)))         ; confirm
@@ -168,7 +178,7 @@
                           (let* ((match (string-match "name=\\([^,]*\\)" c)))
                             (when match
                               (substring c (match-beginning 1) (match-end 1)))))
-                        (mapcar #'identity (path '(fields customfield_11294))) ", ")
+                        (mapcar #'identity (path (list 'fields org-jira-sprint-field))) ", ")
      :start-date (path '(fields start-date))  ; confirm
      :status (org-jira-decode (path '(fields status name)))
      :story-points (path '(fields customfield_11292))

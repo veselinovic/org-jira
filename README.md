@@ -153,17 +153,26 @@ Use these commands from an issue heading or any of its child headings:
 - `M-x org-jira-update-issue` (`C-c iu`): send the heading's title and other
   issue fields to Jira, then refresh the entry in place in the current buffer,
   preserving its heading level and local notes.
-
 - `M-x org-jira-refresh-issue` (`C-c ir`): refresh the linked issue from Jira
   in place in the current buffer, preserving its heading level and local notes.
-
 - `M-x org-jira-update-issue-labels` (`C-c il`): edit labels on the issue's
   property drawer and sync to Jira. Empty input clears all labels.
+- `M-x org-jira-update-issue-feature-link` (`C-c iF`): enter a feature issue
+  key, or leave blank to clear the link.
+- `M-x org-jira-update-issue-sprint` (`C-c iS`): choose a board, then a sprint.
 
+The labels, feature-link, and sprint commands send only the selected field
+to Jira and update the issue's Org property in the current buffer after success, without moving
+the issue to a project file. They respect
+`org-jira-property-overrides`. The feature-link and sprint field IDs default
+to this project's existing mappings; configure them if your Jira uses others:
 
-The labels command sends only labels to Jira and updates the issue's Org
-property in the current buffer after success. It respects
-`org-jira-property-overrides`.
+```lisp
+(setq org-jira-feature-link-field 'customfield_11296
+      org-jira-sprint-field 'customfield_11294)
+```
+
+These settings apply to both importing issues and editing them.
 
 ### Keybinds
 Some of the important keybindings:
@@ -175,6 +184,8 @@ Some of the important keybindings:
 (define-key org-jira-map (kbd "C-c ij") 'org-jira-get-issues-from-custom-jql)
 (define-key org-jira-map (kbd "C-c ih") 'org-jira-get-issues-headonly)
 (define-key org-jira-map (kbd "C-c il") 'org-jira-update-issue-labels)
+(define-key org-jira-map (kbd "C-c iF") 'org-jira-update-issue-feature-link)
+(define-key org-jira-map (kbd "C-c iS") 'org-jira-update-issue-sprint)
 (define-key org-jira-map (kbd "C-c iu") 'org-jira-update-issue)
 (define-key org-jira-map (kbd "C-c iw") 'org-jira-progress-issue)
 (define-key org-jira-map (kbd "C-c in") 'org-jira-progress-issue-next)
