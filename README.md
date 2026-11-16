@@ -129,10 +129,14 @@ or `auto` (the default) to detect the format from user records.
 
 ## Usage
 ### Getting Started
+Use `M-x org-jira-create-issue` (`C-c ic`) in an Org buffer to create a Jira
+issue from the prompted fields and insert it as a top-level heading at point,
+like `org-jira-get-issue-here`.
+
 Use `M-x org-jira-todo-to-jira` on an Org TODO heading to create a Jira
 ticket from it. Select the project, issue type, assignee, priority, labels,
-and components (choose `Done` to finish selecting components). Org tables
-in its description are converted to Jira wiki tables, including headers.
+and components (choose `Done` to finish selecting components). Org formatting
+in its description is converted to Jira wiki markup, including table headers.
 The command also prompts for **Security Service** and **Company** when
 those fields are available on the selected project's issue creation screen.
 It discovers their field IDs and allowed choices from Jira. Multiple-choice
@@ -160,6 +164,28 @@ Use these commands from an issue heading or any of its child headings:
 - `M-x org-jira-update-issue-feature-link` (`C-c iF`): enter a feature issue
   key, or leave blank to clear the link.
 - `M-x org-jira-update-issue-sprint` (`C-c iS`): choose a board, then a sprint.
+
+Comments and descriptions accept Org formatting when you create or update them:
+
+| Org | Jira wiki markup |
+| --- | --- |
+| `=code=` or `~code~` | `{{code}}` |
+| `/italic/` | `_italic_` |
+| `*bold*` | `*bold*` |
+| `_underline_` | `+underline+` |
+| `+strike-through+` | `-strike-through-` |
+| `[[https://example.com][label]]` | `[label\|https://example.com]` |
+
+Org tables, source blocks, and example blocks are also converted. Code contents
+and link targets remain literal. Refresh restores supported Jira formatting to
+editable Org syntax, so later pushes preserve the formatting.
+For buffers imported by older versions, refresh the issue before editing its
+formatted text to load the Org representation.
+
+To post a comment from the buffer, add a `Comment:` child heading, write its body,
+and run `M-x org-jira-update-comment` (`C-c cu`) inside it. A comment without an
+`:ID:` is created; a comment with an ID is updated. `M-x org-jira-add-comment`
+(`C-c cc`) prompts for a new comment in the minibuffer.
 
 The labels, feature-link, and sprint commands send only the selected field
 to Jira and update the issue's Org property in the current buffer after success, without moving

@@ -1383,11 +1383,11 @@ matching ISSUE's ID instead of inserting at point."
                  (org-insert-subheading t))
                (org-jira-insert entry-heading "\n"))
 
-             ;;  Insert 2 spaces of indentation so Jira markup won't cause org-markup
+             ;; Keep imported text editable as Org, indented below the issue.
              (org-jira-insert
               (replace-regexp-in-string
                "^" "  "
-               (format "%s" (slot-value Issue heading-entry))))
+               (org-jira--jira-to-org (slot-value Issue heading-entry))))
              (unless (bolp) (insert "\n"))))
          '(description))))))
 
@@ -1449,7 +1449,7 @@ ISSUES is a list of `org-jira-sdk-issue' records."
   (let* ((issue-id (org-jira-get-from-org 'issue 'key)) ; Really the key
          (filename (org-jira-filename))
          (comment-id (org-jira-get-from-org 'comment 'id))
-         (comment (replace-regexp-in-string "^  " "" (org-jira-get-comment-body comment-id))))
+         (comment (org-jira--org-to-jira (org-jira-get-comment-body comment-id))))
     (let ((issue-id issue-id)
           (filename filename)
           (source-buffer (current-buffer)))
@@ -1500,7 +1500,7 @@ ISSUES is a list of `org-jira-sdk-issue' records."
     (ensure-on-issue-id-with-filename issue-id filename
       (goto-char (point-max))
       (jiralib-add-comment
-       issue-id comment
+       issue-id (org-jira--org-to-jira comment)
        (cl-function
         (lambda (&key _data &allow-other-keys)
           (if (buffer-live-p source-buffer)
@@ -1763,8 +1763,9 @@ Expects input in format such as: [2017-04-05 Wed 01:00]--[2017-04-05 Wed 01:46] 
               (unless (string= created updated)
                 (org-jira-entry-put (point) "updated" updated))
               (goto-char (point-max))
-              ;; Indent Jira markup so it does not become Org headings.
-              (org-jira-insert (replace-regexp-in-string "^" "  " (or body ""))))))))))
+              ;; Keep imported formatting editable below the comment heading.
+              (org-jira-insert (replace-regexp-in-string
+                                "^" "  " (org-jira--jira-to-org body))))))))))
 
 (defun org-jira-update-comments-for-issue (Issue &optional target-buffer)
   "Update the comments for the specified ISSUE issue."
@@ -1979,6 +1980,244 @@ apply the response there even if the user switches buffers."
         (org-jira-update-issue-details issue-id filename)
       (error "Not on an issue"))))
 
+(defun org-jira--jira-literal-ranges ()
+  "Return buffer ranges occupied by Jira code and noformat markup."
+  (save-excursion
+    (goto-char (point-min))
+    (let (ranges)
+      (while (re-search-forward "{{\\|{\\(code\\|noformat\\)\\(?::[^}\n]+\\)?}" nil t)
+        (let ((start (match-beginning 0))
+              (close (if (match-string 1)
+                         (concat "{" (match-string 1) "}")
+                       "}}")))
+          (when (search-forward close nil t)
+            (push (cons start (point)) ranges))))
+      ranges)))
+
+(defun org-jira--mask-markup-ranges (text ranges)
+  "Mask RANGES in TEXT without changing character positions or newlines."
+  (with-temp-buffer
+    (insert text)
+    (dolist (range ranges)
+      (goto-char (car range))
+      (while (re-search-forward "[^\n]" (cdr range) t)
+        (replace-match "x" t t)))
+    (buffer-string)))
+
+(defun org-jira--org-to-jira (text)
+  "Convert supported Org markup in TEXT to Jira wiki markup.
+Use Org's syntax tree to keep literal code and link targets intact."
+  (require 'org-element)
+  (require 'org-table)
+  (with-temp-buffer
+    (insert (or text ""))
+    (delay-mode-hooks (org-mode))
+    (let ((literal-ranges (org-jira--jira-literal-ranges))
+          edits)
+      (org-element-map
+          (with-temp-buffer
+            (insert (org-jira--mask-markup-ranges (or text "") literal-ranges))
+            (delay-mode-hooks (org-mode))
+            (org-element-parse-buffer))
+          '(italic underline strike-through code verbatim link table
+                   src-block example-block)
+        (lambda (element)
+          (let* ((type (org-element-type element))
+                 (begin (org-element-property :begin element))
+                 (end (- (org-element-property :end element)
+                         (or (org-element-property :post-blank element) 0))))
+            (unless (cl-some (lambda (range)
+                              (and (>= begin (car range)) (< begin (cdr range))))
+                            literal-ranges)
+              (pcase type
+                ((or 'italic 'underline 'strike-through)
+                 (let ((delimiter (cdr (assq type '((italic . "_")
+                                                    (underline . "+")
+                                                    (strike-through . "-"))))))
+                   (push (list begin (1+ begin) delimiter) edits)
+                   (push (list (1- end) end delimiter) edits)))
+                ((or 'code 'verbatim)
+                 (push (list begin end
+                             (concat "{{" (buffer-substring-no-properties
+                                            (1+ begin) (1- end)) "}}"))
+                       edits))
+                ('link
+                 (when (eq (org-element-property :format element) 'bracket)
+                   (let* ((contents-begin (org-element-property :contents-begin element))
+                          (contents-end (org-element-property :contents-end element))
+                          (target (buffer-substring-no-properties
+                                   (+ begin 2) (- (or contents-begin end) 2))))
+                     (if contents-begin
+                         (progn
+                           (push (list begin contents-begin "[") edits)
+                           (push (list contents-end end (concat "|" target "]")) edits))
+                       (push (list begin end (concat "[" target "]")) edits)))))
+                ('table
+                 (when (eq (org-element-property :type element) 'org)
+                   (save-excursion
+                     (goto-char (or (org-element-property :post-affiliated element) begin))
+                     (let* ((start (point))
+                            (table-end (org-table-end))
+                            (markup (org-jira--org-tables-to-jira
+                                     (buffer-substring-no-properties start table-end))))
+                       ;; Keep table separators while converting cell contents.
+                       (push
+                        (list start table-end
+                              (mapconcat
+                               (lambda (line)
+                                 (mapconcat #'org-jira--org-to-jira
+                                            (split-string line "|" nil) "|"))
+                               (split-string markup "\n" nil) "\n"))
+                        edits)))))
+                ((or 'src-block 'example-block)
+                 (save-excursion
+                   (goto-char (org-element-property :end element))
+                   (re-search-backward "^[ \t]*#\\+end_" begin t)
+                   (forward-line 1)
+                   (let* ((block-end (point))
+                          (original (save-excursion
+                                      (goto-char begin)
+                                      (org-element-at-point)))
+                          (language (org-element-property :language original))
+                          (macro (if (eq type 'src-block) "code" "noformat")))
+                     (push (list (or (org-element-property :post-affiliated element) begin)
+                                 block-end
+                                 (concat "{" macro
+                                         (if language (concat ":" language) "") "}\n"
+                                         (org-element-property :value original)
+                                         "{" macro "}"
+                                         (if (eq (char-before block-end) ?\n) "\n" "")))
+                           edits))))))))
+        nil nil '(table src-block example-block))
+      ;; Every edit refers to the original text, including nested emphasis.
+      (dolist (edit (sort edits (lambda (a b) (> (car a) (car b)))))
+        (goto-char (car edit))
+        (delete-region (car edit) (cadr edit))
+        (insert (caddr edit))))
+    (buffer-string)))
+
+(defun org-jira--jira-to-org (text)
+  "Restore supported Jira wiki formatting in TEXT to editable Org markup."
+  (require 'org-element)
+  (with-temp-buffer
+    (insert (or text ""))
+    (delay-mode-hooks (org-mode))
+    (let* ((original-tree (org-element-parse-buffer))
+           (literals (org-jira--jira-literal-ranges))
+           (protected (copy-sequence literals))
+           edits)
+      (cl-labels ((protected-p (position)
+                    (cl-some (lambda (range)
+                               (and (>= position (car range)) (< position (cdr range))))
+                             protected))
+                  (inline-code (value begin end)
+                    (let* ((prefix (if (char-before begin) (string (char-before begin)) ""))
+                           (suffix (if (char-after end) (string (char-after end)) ""))
+                           (literal (concat "{{" value "}}")))
+                      ;; Some Jira spans cannot be represented as Org code.
+                      ;; Keep them intact if neither delimiter round-trips.
+                      (or (cl-find-if
+                           (lambda (candidate)
+                             (equal (org-jira--org-to-jira (concat prefix candidate suffix))
+                                    (concat prefix literal suffix)))
+                           (list (concat "=" value "=") (concat "~" value "~")))
+                          literal))))
+        ;; Jira may contain legacy Org code; keep those literals intact too.
+        (org-element-map original-tree '(code verbatim src-block example-block)
+          (lambda (element)
+            (unless (protected-p (org-element-property :begin element))
+              (push (cons (org-element-property :begin element)
+                          (- (org-element-property :end element)
+                             (if (memq (org-element-type element) '(code verbatim))
+                                 (org-element-property :post-blank element)
+                               0))) protected))))
+        ;; Code bodies must not be parsed as emphasis or links.
+        (dolist (range literals)
+          (goto-char (car range))
+          (if (looking-at "{{")
+              (let ((value (buffer-substring-no-properties (+ (car range) 2)
+                                                           (- (cdr range) 2))))
+                (push (list (car range) (cdr range)
+                            (inline-code value (car range) (cdr range))) edits))
+            (looking-at "{\\(code\\|noformat\\)\\(?::\\([^}]+\\)\\)?}")
+            (let* ((macro (match-string 1))
+                   (language (match-string 2))
+                   (block (if (equal macro "code") "src" "example"))
+                   (body (buffer-substring-no-properties
+                          (match-end 0) (- (cdr range) (+ (length macro) 2)))))
+              ;; Preserve inline macros and options that Org cannot express.
+              (when (and (string-prefix-p "\n" body) (string-suffix-p "\n" body)
+                         (or (null language)
+                             (and (equal macro "code")
+                                  (string-match-p "\\`[[:alnum:]_+.-]+\\'" language))))
+                (push (list (car range) (cdr range)
+                            (concat "#+begin_" block
+                                    (if language (concat " " language) "")
+                                    (org-escape-code-in-string body)
+                                    "#+end_" block)) edits)))))
+        ;; Convert Jira links as units; their targets are never emphasis.
+        (goto-char (point-min))
+        (while (re-search-forward "\\[\\([^][\n]+\\)\\]" nil t)
+          (let ((begin (match-beginning 0))
+                (end (match-end 0))
+                (contents (match-string 1)))
+            (unless (or (protected-p begin)
+                        (eq (char-before begin) ?\[)
+                        (eq (char-after end) ?\]))
+              (let (label target)
+                (if (string-match "\\`\\(.*\\)|\\([^|]+\\)\\'" contents)
+                    (setq label (match-string 1 contents)
+                          target (match-string 2 contents))
+                  (when (string-match-p "\\`[[:alpha:]][[:alnum:]+.-]*:" contents)
+                    (setq target contents)))
+                (when target
+                  (push (cons begin end) protected)
+                  ;; The label is converted recursively as part of this edit.
+                  ;; Discard earlier code edits inside the same link.
+                  (setq edits (cl-remove-if
+                               (lambda (edit)
+                                 (and (>= (car edit) begin) (< (car edit) end)))
+                               edits))
+                  (push (list begin end
+                              (concat "[[" target "]"
+                                      (if label
+                                          (concat "[" (org-jira--jira-to-org label) "]")
+                                        "") "]")) edits))))))
+        (org-element-map original-tree 'link
+          (lambda (link)
+            (push (cons (org-element-property :begin link)
+                        (- (org-element-property :end link)
+                           (org-element-property :post-blank link))) protected)))
+        ;; Mask literal text before parsing: its delimiters must not close
+        ;; emphasis that surrounds a code span or a link.
+        (let ((masked (org-jira--mask-markup-ranges (buffer-string) protected)))
+          (with-temp-buffer
+            (insert masked)
+            (delay-mode-hooks (org-mode))
+            (org-element-map (org-element-parse-buffer) '(underline strike-through)
+              (lambda (element)
+                (let* ((begin (org-element-property :begin element))
+                       (end (- (org-element-property :end element)
+                               (org-element-property :post-blank element)))
+                       (delimiter (if (eq (org-element-type element) 'underline) "/" "_")))
+                  (push (list begin (1+ begin) delimiter) edits)
+                  (push (list (1- end) end delimiter) edits))))
+            ;; Include nested emphasis and table-cell boundaries for strikes.
+            (goto-char (point-min))
+            (while (re-search-forward
+                    "\\(^\\|[-[:space:]('\"{*/_+|]\\)\\(-\\([^[:space:]]\\|[^[:space:]].*?[^[:space:]]\\)-\\)\\($\\|[-[:space:].,:!?;'\")}\\[*/_+|]\\)"
+                    nil t)
+              (let ((begin (match-beginning 2))
+                    (end (match-end 2)))
+                (push (list begin (1+ begin) "+") edits)
+                (push (list (1- end) end "+") edits)
+                (goto-char end)))))
+        (dolist (edit (sort edits (lambda (a b) (> (car a) (car b)))))
+          (goto-char (car edit))
+          (delete-region (car edit) (cadr edit))
+          (insert (caddr edit)))))
+    (buffer-string)))
+
 (defun org-jira--org-tables-to-jira (description)
   "Convert Org tables in DESCRIPTION to Jira wiki table markup."
   (require 'org-element)
@@ -2046,7 +2285,7 @@ apply the response there even if the user switches buffers."
           (ticket-struct
            (org-jira-get-issue-struct
             project type (org-link-display-format (org-get-heading t t))
-            (org-jira--org-tables-to-jira description)
+            (org-jira--org-to-jira description)
             nil '("Security Service" "Company")))
           (issue (org-jira-sdk-create-issue-from-data
                   (jiralib-create-issue ticket-struct))))
@@ -2332,20 +2571,25 @@ creation field names to prompt for when available for this project and type."
 
 ;;;###autoload
 (defun org-jira-create-issue (project type summary description)
-  "Create an issue in PROJECT, of type TYPE, with given SUMMARY and DESCRIPTION."
+  "Create an issue in PROJECT with TYPE, SUMMARY and DESCRIPTION at point.
+Insert the new issue as a top-level heading in the current Org buffer."
   (interactive
    (let* ((project (org-jira-read-project))
           (type (org-jira-read-issue-type project))
           (summary (read-string "Summary: "))
           (description (read-string "Description: ")))
      (list project type summary description)))
+  (unless (derived-mode-p 'org-mode)
+    (user-error "org-jira-create-issue must be run in an Org buffer"))
   (if (or (equal project "")
           (equal type "")
           (equal summary ""))
       (error "Must provide all information!"))
   (let* ((parent-id nil)
-         (ticket-struct (org-jira-get-issue-struct project type summary description)))
-    (org-jira-get-issues (list (jiralib-create-issue ticket-struct)))))
+         (ticket-struct (org-jira-get-issue-struct
+                         project type summary (org-jira--org-to-jira description))))
+    (org-jira--render-issue-here
+     (org-jira-sdk-create-issue-from-data (jiralib-create-issue ticket-struct)))))
 
 ;;;###autoload
 (defun org-jira-create-subtask (project type summary description)
@@ -2359,7 +2603,8 @@ creation field names to prompt for when available for this project and type."
           (equal summary ""))
       (error "Must provide all information!"))
   (let* ((parent-id (org-jira-parse-issue-id))
-         (ticket-struct (org-jira-get-issue-struct project type summary description parent-id)))
+         (ticket-struct (org-jira-get-issue-struct
+                         project type summary (org-jira--org-to-jira description) parent-id)))
     (org-jira-get-issues (list (jiralib-create-subtask ticket-struct)))))
 
 (defun org-jira-get-issue-val-from-org (key)
@@ -2383,7 +2628,7 @@ creation field names to prompt for when available for this project and type."
              (org-goto-first-child)
              (forward-thing 'whitespace)
              (if (looking-at "description:\\(?:[ \t]\\|$\\)")
-                 (org-trim (org-get-entry))
+                 (org-trim (org-remove-indentation (org-get-entry)))
                (error "Can not find description field for this issue")))
 
             ((eq my-key 'summary)
@@ -2739,7 +2984,8 @@ otherwise it should return:
            (overrides org-jira-property-overrides)
            (org-issue-components (org-jira-get-issue-val-from-org 'components))
            (org-issue-labels (org-jira-get-issue-val-from-org 'labels))
-           (org-issue-description (org-trim (org-jira-get-issue-val-from-org 'description)))
+           (org-issue-description
+            (org-jira--org-to-jira (org-trim (org-jira-get-issue-val-from-org 'description))))
            (org-issue-priority (org-jira-get-issue-val-from-org 'priority))
            (org-issue-type (org-jira-get-issue-val-from-org 'type))
            (org-issue-type-id (org-jira-get-issue-val-from-org 'type-id))
@@ -2895,7 +3141,8 @@ it is a symbol, it will be converted to string."
    (org-jira-entry-put (point) "ID" comment-id)
    (search-forward ":END:" nil 1 1)
    (forward-line)
-   (org-trim (buffer-substring-no-properties (point) (point-max)))))
+   (org-trim (org-remove-indentation
+              (buffer-substring-no-properties (point) (point-max))))))
 
 (defun org-jira-get-worklog-comment (&optional worklog-id)
   "Get the worklog comment of the worklog with id WORKLOG-ID."

@@ -282,6 +282,84 @@ CLOCK:")))
                    (regexp-quote "** TODO [[https://example.atlassian.net/browse/AHU-39][Rendered story title]]")
                    (buffer-string))))))
 
+(ert-deftest org-jira-create-issue-renders-level-one-at-point-test ()
+  (let ((jiralib-url "https://example.atlassian.net")
+        (jiralib-token t)
+        (jiralib-use-restapi t)
+        (jiralib-issue-regexp "ahu-[0-9]+")
+        (org-jira-deadline-duedate-sync-p nil)
+        (org-tags-column -80)
+        requests)
+    (with-temp-buffer
+      (org-mode)
+      (insert "* Existing\nKeep this\n\n* Next\nKeep that\n")
+      (goto-char (point-min))
+      (search-forward "\n\n")
+      (let ((source-buffer (current-buffer)))
+        (cl-letf (((symbol-function 'org-jira-get-issue-struct)
+                   (lambda (project type summary description &rest _args)
+                     `((fields (project (key . ,project))
+                               (issuetype (name . ,type))
+                               (summary . ,summary) (description . ,description)))))
+                  ((symbol-function 'jiralib--rest-call-it)
+                   (lambda (url &rest settings)
+                     (push (list url (plist-get settings :type)) requests)
+                     (if (equal url "/rest/api/2/issue")
+                         '((id . "10001") (key . "AHU-39")
+                           (self . "https://example.atlassian.net/rest/api/2/issue/10001"))
+                       (org-jira-t--issue-data))))
+                  ((symbol-function 'org-jira--get-project-buffer)
+                   (lambda (&rest _args) (ert-fail "Opened a project buffer"))))
+          (org-jira-create-issue "AHU" "Story" "New issue" "Details"))
+        (should (eq (current-buffer) source-buffer)))
+      (should (equal (nreverse requests)
+                     '(("/rest/api/2/issue" "POST")
+                       ("https://example.atlassian.net/rest/api/2/issue/10001" "GET"))))
+      (should (string-prefix-p "* Existing\nKeep this\n\n* TODO" (buffer-string)))
+      (should (string-suffix-p "* Next\nKeep that\n" (buffer-string)))
+      (goto-char (org-find-entry-with-id "AHU-39"))
+      (should (= (org-outline-level) 1))
+      (should (equal (org-get-heading t t t t)
+                     "[[https://example.atlassian.net/browse/AHU-39][Rendered story title]]"))
+      (should (equal (org-jira-get-issue-val-from-org 'description)
+                     "Rendered description")))))
+
+(ert-deftest org-jira-create-issue-requires-org-buffer-test ()
+  (with-temp-buffer
+    (fundamental-mode)
+    (cl-letf (((symbol-function 'org-jira-get-issue-struct)
+               (lambda (&rest _args) (ert-fail "Prepared a ticket outside Org")))
+              ((symbol-function 'jiralib-create-issue)
+               (lambda (&rest _args) (ert-fail "Created a ticket outside Org"))))
+      (should-error (org-jira-create-issue "AHU" "Story" "New issue" "Details")
+                    :type 'user-error))))
+
+(ert-deftest org-jira-create-issue-failure-preserves-buffer-test ()
+  (dolist (failure '(create fetch))
+    (let ((jiralib-token t)
+          (jiralib-use-restapi t)
+          (jiralib-issue-regexp "ahu-[0-9]+"))
+      (with-temp-buffer
+        (org-mode)
+        (insert "* Existing\nKeep this\n\n* Next\nKeep that\n")
+        (goto-char (point-min))
+        (search-forward "\n\n")
+        (let ((before (buffer-string))
+              (position (point)))
+          (cl-letf (((symbol-function 'org-jira-get-issue-struct)
+                     (lambda (&rest _args) '((fields (summary . "New issue")))))
+                    ((symbol-function 'jiralib--rest-call-it)
+                     (lambda (url &rest _settings)
+                       (if (equal url "/rest/api/2/issue")
+                           (if (eq failure 'create)
+                               '((errors (summary . "Rejected")))
+                             '((id . "10001") (key . "AHU-39")
+                               (self . "https://example.atlassian.net/rest/api/2/issue/10001")))
+                         (error "Could not fetch the new issue")))))
+            (should-error (org-jira-create-issue "AHU" "Story" "New issue" "Details")))
+          (should (equal (buffer-string) before))
+          (should (= (point) position)))))))
+
 (ert-deftest org-jira-refresh-issue-in-place-test ()
   (let ((jiralib-url "https://example.atlassian.net")
         (jiralib-token t)
@@ -1160,6 +1238,238 @@ CLOCK: [2026-06-23 Tue 14:04]--[2026-06-23 Tue 14:42] =>  0:38
         (org-jira-users nil))
     (should-error (org-jira--user-reference "AHU" "Unknown user")
                   :type 'user-error)))
+
+(ert-deftest org-jira-org-to-jira-inline-formatting-test ()
+  (dolist (case '(("=string=" "{{string}}")
+                  ("~string~" "{{string}}")
+                  ("/string/" "_string_")
+                  ("*string*" "*string*")
+                  ("_string_" "+string+")
+                  ("+string+" "-string-")
+                  ("*bold /italic/* and /italic =code=/"
+                   "*bold _italic_* and _italic {{code}}_")
+                  ("Before /italic/  after\n" "Before _italic_  after\n")
+                  ("Here’s text — and =café=." "Here’s text — and {{café}}.")
+                  ("" "")))
+    (should (equal (org-jira--org-to-jira (car case)) (cadr case)))))
+
+(ert-deftest org-jira-org-to-jira-links-test ()
+  (dolist (case '(("[[https://example.com/a_b?q=x=y][*label* /text/]]"
+                   "[*label* _text_|https://example.com/a_b?q=x=y]")
+                  ("[[https://example.com/a_b]]" "[https://example.com/a_b]")
+                  ("https://example.com/a_b?q=x=y /italic/"
+                   "https://example.com/a_b?q=x=y _italic_")
+                  ("[[https://example.com?q={{value}}][label]]"
+                   "[label|https://example.com?q={{value}}]")))
+    (should (equal (org-jira--org-to-jira (car case)) (cadr case)))))
+
+(ert-deftest org-jira-org-to-jira-preserves-code-test ()
+  (dolist (case '(("=a /b/ +c+ _d_= ~*literal*~"
+                   "{{a /b/ +c+ _d_}} {{*literal*}}")
+                  ("#+begin_src python\n  x = '/literal/'\n  # *literal* _literal_\n#+end_src\n"
+                   "{code:python}\n  x = '/literal/'\n  # *literal* _literal_\n{code}\n")
+                  ("#+begin_example\n/literal/ =literal=\n#+end_example\n"
+                   "{noformat}\n/literal/ =literal=\n{noformat}\n")
+                  ("{code:python}\nx = '/literal/'\n| /A/ | =B= |\n{code}\n"
+                   "{code:python}\nx = '/literal/'\n| /A/ | =B= |\n{code}\n")
+                  ("{{/literal/ +literal+}} /italic/"
+                   "{{/literal/ +literal+}} _italic_")))
+    (should (equal (org-jira--org-to-jira (car case)) (cadr case)))))
+
+(ert-deftest org-jira-org-to-jira-table-formatting-test ()
+  (should (equal (org-jira--org-to-jira
+                  "| /Name/ | =Value= |\n|--------+---------|\n| *bold* | _under_ |\n")
+                 "||_Name_||{{Value}}||\n|*bold*|+under+|\n")))
+
+(ert-deftest org-jira-jira-to-org-formatting-test ()
+  (dolist (case '(("{{code}} _italic_ *bold* +underline+ -strike-"
+                   "=code= /italic/ *bold* _underline_ +strike+")
+                  ("[*bold* _italic_|https://example.com/a_b?q=x=y]"
+                   "[[https://example.com/a_b?q=x=y][*bold* /italic/]]")
+                  ("[{{code}}|https://example.com]"
+                   "[[https://example.com][=code=]]")
+                  ("[label {{code}}|https://example.com] trailing"
+                   "[[https://example.com][label =code=]] trailing")
+                  ("[https://example.com/a_b]" "[[https://example.com/a_b]]")
+                  ("https://example.com/a_b?q=x-y _italic_"
+                   "https://example.com/a_b?q=x-y /italic/")
+                  ("{code:python}\n  x = '/literal/'\n  # _literal_ +literal+\n{code}\n"
+                   "#+begin_src python\n  x = '/literal/'\n  # _literal_ +literal+\n#+end_src\n")
+                  ("{noformat}\n_literal_ +literal+\n{noformat}\n"
+                   "#+begin_example\n_literal_ +literal+\n#+end_example\n")
+                  ("{{*literal* _literal_ +literal+}}"
+                   "=*literal* _literal_ +literal+=")
+                  ("version-name a_b 1+2 3-4 -5 {color:red}plain{color}"
+                   "version-name a_b 1+2 3-4 -5 {color:red}plain{color}")))
+    (should (equal (org-jira--jira-to-org (car case)) (cadr case)))))
+
+(ert-deftest org-jira-formatting-refresh-push-roundtrip-test ()
+  (dolist (markup '("{{code}} _italic_ *bold* +underline+ -strike-"
+                    "*bold _italic_* and _italic {{code}}_"
+                    "[*bold* _italic_|https://example.com/a_b?q=x-y]"
+                    "[{{code}}|https://example.com]"
+                    "[label {{code}}|https://example.com] trailing"
+                    "||_Name_||{{Value}}||\n|*bold*|+under+|\n"
+                    "{code:python}\nx = '_literal_'\n{code}\n"))
+    (should (equal (org-jira--org-to-jira (org-jira--jira-to-org markup)) markup))))
+
+(ert-deftest org-jira-literal-formatting-roundtrip-test ()
+  (dolist (markup '("foo{{bar}}baz" "{{}}" "{{ a }}" "{{a =b= c}}"
+                    "_italic {{_literal_}} text_"
+                    "+under {{+literal+}} text+"
+                    "-strike {{-literal-}} text-"
+                    "[label {{a =b= c}}|https://example.com]"
+                    "{code}\n#+end_src\n/literal/\n{code}\n"
+                    "{code}\n,#+end_src\n,* heading\n{code}\n"
+                    "{noformat}\n#+end_example\n_literal_\n{noformat}\n"
+                    "{code:title=Example Code|language=python}\n  x = 1\n{code}"))
+    (should (equal (org-jira--org-to-jira (org-jira--jira-to-org markup)) markup))))
+
+(ert-deftest org-jira-jira-to-org-preserves-existing-org-code-test ()
+  (dolist (text '("=text '-literal-' [label|https://example.com]="
+                  "#+begin_src python\ntext = '-literal-'\n[label|https://example.com]\n#+end_src\n"
+                  "#+begin_example\n-literal- [label|https://example.com]\n#+end_example\n"))
+    (should (equal (org-jira--jira-to-org text) text))))
+
+(ert-deftest org-jira-jira-to-org-nested-strikethrough-test ()
+  (dolist (case '(("*bold -strike-*" "*bold +strike+*")
+                  ("_italic -strike-_" "/italic +strike+/")
+                  ("|-strike-|" "|+strike+|")))
+    (should (equal (org-jira--jira-to-org (car case)) (cadr case)))))
+
+(ert-deftest org-jira-org-to-jira-macro-in-emphasis-test ()
+  (should (equal (org-jira--org-to-jira "/italic {{/literal/}} text/")
+                 "_italic {{/literal/}} text_")))
+
+(ert-deftest org-jira-comments-send-jira-formatting-test ()
+  (dolist (operation '(add new edit))
+    (let ((jiralib-token t)
+          (jiralib-use-restapi t)
+          method arguments)
+      (with-temp-buffer
+        (org-mode)
+        (insert "* TODO Issue\n:PROPERTIES:\n:ID: AHU-39\n:END:\n"
+                "** Comment: Ada\n")
+        (when (eq operation 'edit)
+          (insert ":PROPERTIES:\n:ID: 20001\n:END:\n"))
+        (insert "=code= /italic/ *bold*\n")
+        (goto-char (point-max))
+        (cl-letf (((symbol-function 'jiralib-call)
+                   (lambda (called-method _callback &rest args)
+                     (setq method called-method arguments args))))
+          (if (eq operation 'add)
+              (org-jira-add-comment "AHU-39" nil "=code= /italic/ *bold*")
+            (org-jira-update-comment)))
+        (should (equal (car arguments) "AHU-39"))
+        (should (equal method (if (eq operation 'edit) "editComment" "addComment")))
+        (when (eq operation 'edit)
+          (should (equal (cadr arguments) "20001")))
+        (should (equal (if (eq operation 'edit)
+                          (car (last arguments))
+                        (alist-get 'body (car (last arguments))))
+                       "{{code}} _italic_ *bold*"))))))
+
+(ert-deftest org-jira-create-description-sends-jira-formatting-test ()
+  (let ((jiralib-users-cache '(((displayName . "Ada") (name . "ada"))))
+        (org-jira-users nil)
+        (jiralib-priority-codes-cache '(("4" . "Minor")))
+        (jiralib-issue-types-by-project-cache '(("AHU" ("10001" . "Story")))))
+    (let (fields)
+      (cl-letf (((symbol-function 'jiralib-get-components) (lambda (_project) nil))
+                ((symbol-function 'completing-read)
+                 (lambda (prompt &rest _args)
+                   (if (equal prompt "Assignee: ") "Unassigned" "Minor")))
+                ((symbol-function 'org-jira-read-labels) (lambda () nil))
+                ((symbol-function 'jiralib-create-issue)
+                 (lambda (issue)
+                   (setq fields (alist-get 'fields issue))
+                   (org-jira-t--issue-data)))
+                ((symbol-function 'org-jira--get-project-buffer)
+                 (lambda (&rest _args) (ert-fail "Opened a project buffer"))))
+        (with-temp-buffer
+          (org-mode)
+          (org-jira-create-issue "AHU" "Story" "Title" "=code= /italic/ *bold*"))
+        (should (equal (alist-get 'description fields) "{{code}} _italic_ *bold*"))))))
+
+(ert-deftest org-jira-update-description-sends-jira-formatting-test ()
+  (let ((jiralib-token t)
+        (jiralib-users-cache '(((displayName . "Ada") (name . "ada"))))
+        (org-jira-users nil)
+        (org-jira-worklog-sync-p nil)
+        (org-jira-deadline-duedate-sync-p nil)
+        fields)
+    (with-temp-buffer
+      (org-mode)
+      (insert "* TODO Issue\n:PROPERTIES:\n:ID: AHU-39\n"
+              ":assignee: Unassigned\n:reporter: Unassigned\n:type: Story\n"
+              ":type-id: 10001\n:priority: Minor\n:labels:\n:components:\n:END:\n"
+              "** description:\n=code= /italic/ *bold*\n"
+              "| Name | Value |\n|------+-------|\n| a | b |\n")
+      (goto-char (point-min))
+      (cl-letf (((symbol-function 'jiralib-get-components) (lambda (_project) nil))
+                ((symbol-function 'jiralib-get-priorities) (lambda () '(("4" . "Minor"))))
+                ((symbol-function 'jiralib-call)
+                 (lambda (_method _callback &rest args) (setq fields (cadr args)))))
+        (org-jira-update-issue))
+      (should (equal (alist-get 'description fields)
+                     "{{code}} _italic_ *bold*\n||Name||Value||\n|a|b|")))))
+
+(ert-deftest org-jira-render-description-restores-org-formatting-test ()
+  (let ((jiralib-url "https://example.com")
+        (org-jira-deadline-duedate-sync-p nil)
+        (data (copy-tree (org-jira-t--issue-data))))
+    (setf (alist-get 'description (alist-get 'fields data))
+          "{{code}} _italic_ *bold* +underline+ -strike-")
+    (with-temp-buffer
+      (org-mode)
+      (org-jira--render-issue-here (org-jira-sdk-create-issue-from-data data))
+      (should (string-match-p (regexp-quote "  =code= /italic/ *bold* _underline_ +strike+")
+                              (buffer-string))))))
+
+(ert-deftest org-jira-render-comment-restores-org-formatting-test ()
+  (let ((issue (org-jira-sdk-create-issue-from-data (org-jira-t--issue-data)))
+        (comment (org-jira-sdk-create-comment-from-data
+                  '((id . "20001") (author (displayName . "Ada"))
+                    (body . "{{code}} _italic_ *bold* +underline+ -strike-")
+                    (created . "2026-11-16") (updated . "2026-11-16")))))
+    (with-temp-buffer
+      (org-mode)
+      (insert "* TODO Issue\n:PROPERTIES:\n:ID: AHU-39\n:END:\n")
+      (org-jira--render-comment issue comment (current-buffer))
+      (should (string-match-p (regexp-quote "  =code= /italic/ *bold* _underline_ +strike+")
+                              (buffer-string))))))
+
+(ert-deftest org-jira-comment-code-indentation-survives-push-test ()
+  (dolist (rendered '(nil t))
+    (let ((jiralib-token t)
+          (jiralib-use-restapi t)
+          arguments)
+      (with-temp-buffer
+        (org-mode)
+        (insert "* TODO Issue\n:PROPERTIES:\n:ID: AHU-39\n:END:\n"
+                "** Comment: Ada\n:PROPERTIES:\n:ID: 20001\n:END:\n")
+        (insert (if rendered
+                    "  #+begin_src python\n    x = 1\n  #+end_src\n"
+                  "#+begin_src python\n  x = 1\n#+end_src\n"))
+        (goto-char (point-max))
+        (cl-letf (((symbol-function 'jiralib-call)
+                   (lambda (_method _callback &rest args) (setq arguments args))))
+          (org-jira-update-comment))
+        (should (equal (car (last arguments))
+                       "{code:python}\n  x = 1\n{code}"))))))
+
+(ert-deftest org-jira-description-code-indentation-survives-refresh-test ()
+  (let ((jiralib-url "https://example.com")
+        (org-jira-deadline-duedate-sync-p nil)
+        (data (copy-tree (org-jira-t--issue-data))))
+    (setf (alist-get 'description (alist-get 'fields data))
+          "{code:python}\n  x = 1\n{code}")
+    (with-temp-buffer
+      (org-mode)
+      (org-jira--render-issue-here (org-jira-sdk-create-issue-from-data data))
+      (goto-char (point-min))
+      (should (equal (org-jira--org-to-jira (org-jira-get-issue-val-from-org 'description))
+                     "{code:python}\n  x = 1\n{code}")))))
 
 (ert-deftest org-jira-org-tables-to-jira-test ()
   (dolist (case
