@@ -234,6 +234,25 @@ order by priority, created DESC "
     ))
 ```
 
+To choose and run just one query, use
+`M-x org-jira-get-issues-from-custom-jql-select` in an Org buffer.
+Give queries an optional `:name` for the selection prompt:
+
+```elisp
+(setq org-jira-custom-jqls
+      '((:name "My open issues"
+         :jql "assignee = currentUser() AND resolution = Unresolved"
+         :limit 100)
+        (:name "Bugs"
+         :jql "issuetype = Bug AND resolution = Unresolved"
+         :limit 50)))
+```
+
+Queries without `:name` appear under their legacy `:filename`, or their JQL
+text if neither key is set. Labels must be unique; add distinct `:name`
+values if two queries have the same label. Only the chosen query runs, and
+its results are inserted at point in the current Org buffer.
+
 #### Streamlined transition flow
 
 You can define your own streamlined issue progress flow as such:

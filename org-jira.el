@@ -321,8 +321,9 @@ See `org-default-priority' for more info."
           :limit 100
           :filename "this-years-work")
     )
-  "A list of plists with :jql, :limit and optional :filename keys.
+  "A list of plists with :jql, :limit and optional :name and :filename keys.
 Results are inserted as top-level headings in the current Org buffer.
+The :name key labels queries for `org-jira-get-issues-from-custom-jql-select'.
 The legacy :filename key does not select the destination file."
   :group 'org-jira
   :type '(alist :value-type plist))
@@ -1213,6 +1214,36 @@ into the current Org buffer, like `org-jira-get-issue-here'."
          (limit (cl-getf uno :limit))
          (jql (replace-regexp-in-string "[\n]" " " (cl-getf uno :jql))))
     (jiralib-do-jql-search jql limit (org-jira-get-issues-from-custom-jql-callback filename jl))))
+
+;;;###autoload
+(defun org-jira-get-issues-from-custom-jql-select ()
+  "Select and run one query from `org-jira-custom-jqls'.
+Prompt using each query's :name, falling back to :filename or its JQL text.
+Labels must be nonempty strings and unique; add :name keys to distinguish
+queries with identical labels.  Insert results as top-level headings at
+point in the current Org buffer."
+  (interactive)
+  (unless (derived-mode-p 'org-mode)
+    (user-error "org-jira-get-issues-from-custom-jql-select must be run in an Org buffer"))
+  (unless org-jira-custom-jqls
+    (user-error "No custom JQL queries configured in org-jira-custom-jqls"))
+  (let (choices)
+    (dolist (query org-jira-custom-jqls)
+      (let ((label (or (plist-get query :name)
+                       (plist-get query :filename)
+                       (plist-get query :jql))))
+        (unless (and (stringp label) (> (length label) 0))
+          (user-error "Each custom JQL query needs a nonempty string label"))
+        (setq label (replace-regexp-in-string "[\n]" " " label))
+        (when (assoc label choices)
+          (user-error "Duplicate custom JQL label %s; use distinct :name values" label))
+        (push (cons label query) choices)))
+    (setq choices (nreverse choices))
+    (let* ((selection (completing-read "Custom JQL query: " choices nil t))
+           (query (cdr (assoc selection choices))))
+      (unless query
+        (user-error "No custom JQL query selected"))
+      (org-jira-get-issues-from-custom-jql (list query)))))
 
 (defun org-jira--get-project-buffer (Issue)
   (let* ((proj-key (org-jira--get-proj-key-from-issue Issue))
