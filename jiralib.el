@@ -379,7 +379,7 @@ request.el, so if at all possible, it should be avoided."
                              :params `((startAt . ,start-at) (maxResults . 50))))
                       (values (alist-get 'values page)))
                  (setq fields (append fields (append values nil))
-                       more (not (eq (alist-get 'last page) t)))
+                       more (not (eq (alist-get 'isLast page) t)))
                  (when more
                    (unless (> (length values) 0)
                      (error "Invalid Jira create-field pagination: %S" page))
